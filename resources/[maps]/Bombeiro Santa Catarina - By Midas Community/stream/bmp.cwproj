@@ -1,0 +1,27 @@
+<CodeWalkerProject>
+  <Name>New CodeWalker Project</Name>
+  <Version value="1" />
+  <YmapFilenames>
+    <Item>map1.ymap</Item>
+    <Item>tkmodssamu.ymap</Item>
+  </YmapFilenames>
+  <YtypFilenames>
+    <Item>tkmodssamu.ytyp</Item>
+    <Item>types1.ytyp</Item>
+  </YtypFilenames>
+  <YbnFilenames />
+  <YndFilenames />
+  <YnvFilenames />
+  <TrainsFilenames />
+  <ScenarioFilenames />
+  <AudioRelFilenames />
+  <YdrFilenames>
+    <Item>cbmsc_newtext.ydr</Item>
+    <Item>tkmodssamu_model.ydr</Item>
+  </YdrFilenames>
+  <YddFilenames />
+  <YftFilenames />
+  <YtdFilenames>
+    <Item>tkmodssamu_txd.ytd</Item>
+  </YtdFilenames>
+</CodeWalkerProject>
