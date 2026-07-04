@@ -1,0 +1,56 @@
+html<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lil</title>
+    <link rel="preconnect" href="https://googleapis.com">
+    <link rel="preconnect" href="https://gstatic.com" crossorigin>
+    <link href="https://googleapis.com/css2?family=Manrope:wght@200..800&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="./script.js"></script>
+    <link rel="stylesheet" crossorigin href="./style.css">
+</head>
+
+<body>
+    <!-- Elemento de áudio configurado para a sua música mp3 -->
+    <audio id="loadingMusic" src="./i_get_around.mp3" loop></audio>
+
+    <!-- Onde o framework (Vue/React) monta o vídeo e a interface -->
+    <div id="app"></div>
+
+    <!-- Script para forçar a inicialização do áudio no FiveM -->
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const audio = document.getElementById("loadingMusic");
+            
+            if (audio) {
+                // Configura o volume em 40% (mude para 0.5 se quiser 50%, ou 1.0 para 100%)
+                audio.volume = 0.4; 
+                
+                function forcarSom() {
+                    audio.play().then(() => {
+                        console.log("Música iniciada com sucesso!");
+                        // Se o áudio tocar, remove os gatilhos extras da tela
+                        window.removeEventListener("keydown", forcarSom);
+                        window.removeEventListener("mousedown", forcarSom);
+                    }).catch(error => {
+                        console.log("Aguardando liberação do navegador do FiveM ou interação...");
+                    });
+                }
+
+                // 1. Tenta tocar imediatamente ao carregar a página
+                forcarSom();
+
+                // 2. Se o FiveM bloquear por falta de interação, toca assim que o jogador clicar ou apertar qualquer tecla
+                window.addEventListener("keydown", forcarSom);
+                window.addEventListener("mousedown", forcarSom);
+
+                // 3. Mantém uma tentativa automática a cada 500 milissegundos por garantia
+                setInterval(forcarSom, 500);
+            }
+        });
+    </script>
+</body>
+
+</html>
