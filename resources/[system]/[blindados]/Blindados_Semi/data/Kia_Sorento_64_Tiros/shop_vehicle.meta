@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShopVehicleDataArray>
+	<Vehicles>
+	<Item>
+		<lockHash>CU_VEH_BCs_kiasor</lockHash>
+		<modelNameHash>BCs_kiasor</modelNameHash>
+		<cost value="100"/>
+		<textLabel>BCs_kiasor</textLabel>
+		<textLabel></textLabel>
+	</Item>
+	</Vehicles>
+</ShopVehicleDataArray>
