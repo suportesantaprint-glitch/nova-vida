@@ -51,10 +51,13 @@ end
 function vRP.ConsultItem(Passport,Item,Amount)
 	local Passport = parseInt(Passport)
 	local Amount = parseInt(Amount,true)
-	local ItemAmount,ItemName,ItemSlot = table.unpack(vRP.InventoryItemAmount(Passport,Item))
+	local source = vRP.Source(Passport)
 
-	if ItemAmount >= Amount and not vRP.CheckDamaged(ItemName) then
-		return { Amount = ItemAmount, Item = ItemName, Slot = ItemSlot }
+	if source then
+		local count = exports.ox_inventory:GetItemCount(source, Item)
+		if count >= Amount then
+			return { Amount = count, Item = Item, Slot = "1" }
+		end
 	end
 
 	return false
@@ -94,7 +97,11 @@ end
 -- CHECKWEIGHT
 -----------------------------------------------------------------------------------------------------------------------------------------	
 function vRP.CheckWeight(Passport,Item,Amount)
-	return ((vRP.InventoryWeight(Passport) + (exports.vrp:ItemWeight(Item) * (Amount or 1))) <= vRP.GetWeight(Passport)) and true or false
+	local source = vRP.Source(Passport)
+	if source then
+		return not exports.ox_inventory:CanCarryItem(source, Item, Amount)
+	end
+	return true
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- UPGRADEWEIGHT
@@ -142,17 +149,14 @@ end
 -- INVENTORYWEIGHT
 -----------------------------------------------------------------------------------------------------------------------------------------
 function vRP.InventoryWeight(Passport)
-	local Weight = 0
-	local Passport = parseInt(Passport)
-	local Inventory = vRP.Inventory(Passport)
-
-	for _,v in pairs(Inventory) do
-		if exports.vrp:ItemExist(v.item) then
-			Weight = Weight + exports.vrp:ItemWeight(v.item) * v.amount
+	local source = vRP.Source(Passport)
+	if source then
+		local inv = exports.ox_inventory:GetInventory(source)
+		if inv then
+			return math.floor(inv.weight / 1000)
 		end
 	end
-
-	return Weight
+	return 0
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- CHECKDAMAGED
@@ -222,18 +226,12 @@ end
 -- ITEMAMOUNT
 -----------------------------------------------------------------------------------------------------------------------------------------
 function vRP.ItemAmount(Passport,Item)
-	local Amount = 0
-	local ItemSplit = SplitOne(Item)
-	local Passport = parseInt(Passport)
-	local Inventory = vRP.Inventory(Passport)
-
-	for _,v in pairs(Inventory) do
-		if SplitOne(v.item) == ItemSplit then
-			Amount = Amount + v.amount
-		end
+	local source = vRP.Source(Passport)
+	if source then
+		return exports.ox_inventory:GetItemCount(source, Item)
 	end
 
-	return Amount
+	return 0
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- ITEMCHESTAMOUNT
@@ -260,94 +258,18 @@ function vRP.GiveItem(Passport,Item,Amount,Notify,Slot)
 		return false
 	end
 
-	local Animation = exports.vrp:ItemAnim(Item)
-	local Passport = parseInt(Passport)
 	local source = vRP.Source(Passport)
-	local Inventory = vRP.Inventory(Passport)
-
-	local function AddItemToInventory(slot)
-		if type(slot) ~= "string" then
-			slot = tostring(slot)
-		end
-
-		if not Inventory[slot] or Inventory[slot].item == Item then
-			Inventory[slot] = { item = Item, amount = (Inventory[slot] and Inventory[slot].amount or 0) + Amount }
-		end
-
-		if exports.vrp:ItemTypeCheck(Item,"Armamento") and vRP.ConsultItem(Passport,Item) then
-			TriggerClientEvent("inventory:CreateWeapon",source,Item)
-		end
-
-		if Animation then
-			vRPC.PersistentBlock(source,Item,Animation)
-		end
-
-		if Notify and exports.vrp:ItemExist(Item) then
-			TriggerClientEvent("inventory:NotifyItem",source,{ Index = Item, Amount = Amount })
-		end
+	if source then
+		return exports.ox_inventory:AddItem(source, Item, Amount)
 	end
 
-	if not Slot then
-		for Number = 5,vRP.InventorySlots(Passport) do
-			local SlotIndex = tostring(Number)
-			if not Inventory[SlotIndex] or (Inventory[SlotIndex] and Inventory[SlotIndex].item == Item) then
-				AddItemToInventory(SlotIndex)
-				break
-			end
-		end
-	else
-		AddItemToInventory(Slot)
-	end
-
-	return true
+	return false
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- GENERATEITEM
 -----------------------------------------------------------------------------------------------------------------------------------------
 function vRP.GenerateItem(Passport,Item,Amount,Notify,Slot)
-	local Amount = parseInt(Amount)
-	if Amount <= 0 then
-		return false
-	end
-
-	local Passport = parseInt(Passport)
-	local source = vRP.Source(Passport)
-	local Inventory = vRP.Inventory(Passport)
-	local Item = vRP.SortNameItem(Passport,Item)
-	local Animation = exports.vrp:ItemAnim(Item)
-
-	local function AddItemToInventory(slot)
-		if not Inventory[slot] then
-			Inventory[slot] = { item = Item, amount = Amount }
-
-			if exports.vrp:ItemTypeCheck(Item,"Armamento") and vRP.ConsultItem(Passport,Item) then
-				TriggerClientEvent("inventory:CreateWeapon",source,Item)
-			end
-		elseif Inventory[slot] and Inventory[slot].item == Item then
-			Inventory[slot].amount = Inventory[slot].amount + Amount
-		end
-	end
-
-	if not Slot then
-		for Number = 5,vRP.InventorySlots(Passport) do
-			local SlotIndex = tostring(Number)
-			if not Inventory[SlotIndex] or (Inventory[SlotIndex] and Inventory[SlotIndex].item == Item) then
-				AddItemToInventory(SlotIndex)
-				break
-			end
-		end
-	else
-		Slot = tostring(Slot)
-		AddItemToInventory(Slot)
-	end
-
-	if Animation then
-		vRPC.PersistentBlock(source,Item,Animation)
-	end
-
-	if Notify and exports.vrp:ItemExist(Item) then
-		TriggerClientEvent("inventory:NotifyItem",source,{ Index = Item, Amount = Amount })
-	end
+	return vRP.GiveItem(Passport,Item,Amount,Notify,Slot)
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- MAXITENS
@@ -389,100 +311,14 @@ end
 -- TAKEITEM
 -----------------------------------------------------------------------------------------------------------------------------------------
 function vRP.TakeItem(Passport,Item,Amount,Notify,Slot)
-	local Item = Item
-	local Returned = false
-	local Animation = exports.vrp:ItemAnim(Item)
-	local Passport = parseInt(Passport)
-	local source = vRP.Source(Passport)
 	local Amount = parseInt(Amount,true)
-	local Inventory = vRP.Inventory(Passport)
+	local source = vRP.Source(Passport)
 
-	if source then
-		if not Slot then
-			for Index,v in pairs(Inventory) do
-				if Inventory[Index].item == Item and Inventory[Index].amount >= Amount then
-					Inventory[Index].amount = Inventory[Index].amount - Amount
-
-					if Inventory[Index].amount <= 0 then
-						if Animation and not vRP.ConsultItem(Passport,Item) then
-							vRPC.PersistentNone(source,Item)
-						end
-
-						if exports.vrp:ItemTypeCheck(Item,"Armamento") or exports.vrp:ItemTypeCheck(Item,"Arremesso") then
-							TriggerClientEvent("inventory:verifyWeapon",source,Item)
-						end
-
-						if Index == "4" then
-							local Skinshop = exports.vrp:ItemSkinshop(Item)
-							if Skinshop then
-								TriggerClientEvent("skinshop:BackpackRemove",source)
-							end
-						end
-
-						local Execute = exports.vrp:ItemExecute(Item)
-						if Execute and Execute.Event and Execute.Type and not vRP.ConsultItem(Passport,Item) then
-							if Execute.Type == "Client" then
-								TriggerClientEvent(Execute.Event,source)
-							else
-								TriggerEvent(Execute.Event,source,Passport)
-							end
-						end
-
-						Inventory[Index] = nil
-					end
-
-					if Notify and exports.vrp:ItemExist(Item) then
-						TriggerClientEvent("inventory:NotifyItem",source,{ Index = Item, Amount = -Amount })
-					end
-
-					Returned = true
-
-					break
-				end
-			end
-		else
-			local Slot = tostring(Slot)
-			if Inventory[Slot] and Inventory[Slot].item == Item and Inventory[Slot].amount >= Amount then
-				Inventory[Slot].amount = Inventory[Slot].amount - Amount
-
-				if Inventory[Slot].amount <= 0 then
-					if Animation and not vRP.ConsultItem(Passport,Item) then
-						vRPC.PersistentNone(source,Item)
-					end
-
-					if exports.vrp:ItemTypeCheck(Item,"Armamento") or exports.vrp:ItemTypeCheck(Item,"Arremesso") then
-						TriggerClientEvent("inventory:verifyWeapon",source,Item)
-					end
-
-					if Slot == "4" then
-						local Skinshop = exports.vrp:ItemSkinshop(Item)
-						if Skinshop then
-							TriggerClientEvent("skinshop:BackpackRemove",source)
-						end
-					end
-
-					local Execute = exports.vrp:ItemExecute(Item)
-					if Execute and Execute.Event and Execute.Type and not vRP.ConsultItem(Passport,Item) then
-						if Execute.Type == "Client" then
-							TriggerClientEvent(Execute.Event,source)
-						else
-							TriggerEvent(Execute.Event,source,Passport)
-						end
-					end
-
-					Inventory[Slot] = nil
-				end
-
-				if Notify and exports.vrp:ItemExist(Item) then
-					TriggerClientEvent("inventory:NotifyItem",source,{ Index = Item, Amount = -Amount })
-				end
-
-				Returned = true
-			end
-		end
+	if source and Amount > 0 then
+		return exports.ox_inventory:RemoveItem(source, Item, Amount)
 	end
 
-	return Returned
+	return false
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- CLEANSLOT
@@ -500,57 +336,7 @@ end
 -- REMOVEITEM
 -----------------------------------------------------------------------------------------------------------------------------------------
 function vRP.RemoveItem(Passport,Item,Amount,Notify)
-	local Amount = parseInt(Amount)
-	if Amount <= 0 then
-		return false
-	end
-
-	local Passport = parseInt(Passport)
-	local source = vRP.Source(Passport)
-	local Inventory = vRP.Inventory(Passport)
-
-	for Index,v in pairs(Inventory) do
-		if Inventory[Index] and Inventory[Index].item == Item and Inventory[Index].amount >= Amount then
-			Inventory[Index].amount = Inventory[Index].amount - Amount
-
-			if Inventory[Index].amount <= 0 then
-				local Animation = exports.vrp:ItemAnim(Item)
-				if Animation and not vRP.ConsultItem(Passport,Item) then
-					vRPC.PersistentNone(source,Item)
-				end
-
-				if exports.vrp:ItemTypeCheck(Item,"Armamento") or exports.vrp:ItemTypeCheck(Item,"Arremesso") then
-					TriggerClientEvent("inventory:verifyWeapon",source,Item)
-				end
-
-				if exports.vrp:ItemUnique(Item) then
-					local Unique = SplitUnique(Item)
-					if Unique then
-						vRP.RemSrvData(Unique)
-					end
-				end
-
-				local Execute = exports.vrp:ItemExecute(Item)
-				if Execute and Execute.Event and Execute.Type and not vRP.ConsultItem(Passport,Item) then
-					if Execute.Type == "Client" then
-						TriggerClientEvent(Execute.Event,source)
-					else
-						TriggerEvent(Execute.Event,source,Passport)
-					end
-				end
-
-				Inventory[Index] = nil
-			end
-
-			if Notify and exports.vrp:ItemExist(Item) then
-				TriggerClientEvent("inventory:NotifyItem",source,{ Index = Item, Amount = -Amount })
-			end
-
-			return true
-		end
-	end
-
-	return false
+	return vRP.TakeItem(Passport, Item, Amount, Notify)
 end
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- GETSRVDATA

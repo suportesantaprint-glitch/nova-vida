@@ -2963,7 +2963,7 @@ local List = {
 			["ATTACH_CROSSHAIR"] = "COMPONENT_AT_SCOPE_MACRO_02_MK2",
 			["ATTACH_MAGAZINE"] = "COMPONENT_BULLPUPRIFLE_MK2_CLIP_02",
 			["ATTACH_GRIP"] = "COMPONENT_AT_MUZZLE_01",
-			["ATTACH_SILENCER"] = "COMPONENT_AT_AR_SUPP"
+			["ATTACH_SILENCER"] = "COMPONENT_AT_AR_SUPP_02"
 		},
 		Economy = 24225,
 		Recycle = {
@@ -4099,7 +4099,7 @@ local List = {
 		AdminLevel = 1,
 		Index = "coilover",
 		Name = "Suspensão Coilover",
-		Description = "Projetada para oferecer ajustabilidade extrema e resposta rápida em curvas fechadas e mudanças de direção rápidas, ajuda a maximizar a aderência nas curvas e proporcionar uma sensação precisa e controlada ao volante, fundamental para executar manobras precisas e controladas durante as competições de drift.",
+		Description = "Projetada para oferecer ajustabilidade extrema e resposta rápida em curvas fechadas e mudanças de direção rápidas, ajuda a maximizar a aderência nas curvas e proporciona uma sensação precisa e controlada ao volante, fundamental para executar manobras precisas e controladas durante as competições de drift.",
 		Type = "Consumível",
 		Weight = 15.25,
 		Economy = 24725,
@@ -4807,7 +4807,7 @@ CreateThread(function()
 		}
 	end
 
-	for Model,v in pairs(ListVehicles) do
+	for Model,v in pairs(ListVehicles or {}) do
 		if v.Item then
 			List["vehicle_"..Model] = {
 				Index = "vehicle",
@@ -4890,13 +4890,6 @@ end)
 exports("ItemWeight",function(Item)
 	local Item = SplitOne(Item)
 	return List[Item] and List[Item].Weight or 0.0
-end)
------------------------------------------------------------------------------------------------------------------------------------------
--- ITEMBACKPACK
------------------------------------------------------------------------------------------------------------------------------------------
-exports("ItemBackpack",function(Item)
-	local Item = SplitOne(Item)
-	return List[Item] and List[Item].Backpack or 0
 end)
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- ITEMMAXAMOUNT
