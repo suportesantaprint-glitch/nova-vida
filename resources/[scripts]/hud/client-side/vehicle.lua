@@ -1,0 +1,444 @@
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VARIABLES
+-----------------------------------------------------------------------------------------------------------------------------------------
+local Rpm = 0
+local Fuel = 0
+local Speed = 0
+local Nitro = 0
+local Spike = {}
+local LastSpeed = 0
+local Locked = false
+local Loadout = false
+local EngineHealth = 0
+local ActualVehicle = nil
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- NITRO
+-----------------------------------------------------------------------------------------------------------------------------------------
+local NitroFuel = 0
+local NitroActive = false
+local NitroButton = GetNetworkTime()
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SEATBELT
+-----------------------------------------------------------------------------------------------------------------------------------------
+local SeatbeltSpeed = 0
+local SeatbeltLock = false
+local SeatbeltVelocity = vec3(0,0,0)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- TYRES
+-----------------------------------------------------------------------------------------------------------------------------------------
+local Tyres = {
+	{ Bone = "wheel_lf", Index = 0 },
+	{ Bone = "wheel_rf", Index = 1 },
+	{ Bone = "wheel_lm", Index = 2 },
+	{ Bone = "wheel_lm1", Index = 2 },
+	{ Bone = "wheel_lm2", Index = 2 },
+	{ Bone = "wheel_lm3", Index = 2 },
+	{ Bone = "wheel_lm4", Index = 2 },
+	{ Bone = "wheel_rm", Index = 3 },
+	{ Bone = "wheel_rm1", Index = 3 },
+	{ Bone = "wheel_rm2", Index = 3 },
+	{ Bone = "wheel_rm3", Index = 3 },
+	{ Bone = "wheel_rm4", Index = 3 },
+	{ Bone = "wheel_lr", Index = 4 },
+	{ Bone = "wheel_rr", Index = 5 }
+}
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- THREADSYSTEM
+-----------------------------------------------------------------------------------------------------------------------------------------
+CreateThread(function()
+	LoadPtfxAsset("veh_xs_vehicle_mods")
+
+	while true do
+		local TimeDistance = 999
+		if LocalPlayer["state"]["Active"] and Display then
+			if not Loadout then
+				if LoadTexture("circleminimap") then
+					AddReplaceTexture("platform:/textures/graphics","radarmasksm","circleminimap","radarmasksm")
+
+					SetMinimapComponentPosition("minimap","L","B",0.005,-0.025,0.175,0.225)
+					SetMinimapComponentPosition("minimap_mask","L","B",0.02,0.39,0.1135,0.5)
+					SetMinimapComponentPosition("minimap_blur","L","B",-0.02,-0.01,0.265,0.225)
+
+					SetBigmapActive(true,false)
+
+					repeat
+						Wait(100)
+
+						SetMinimapClipType(1)
+						SetBigmapActive(false,false)
+					until not IsBigmapActive()
+
+					SetRadarZoom(1100)
+					Loadout = true
+				end
+			end
+
+			local Ped = PlayerPedId()
+			local InVehicle = IsPedInAnyVehicle(Ped)
+			if InVehicle then
+				TimeDistance = 100
+
+				local Vehicle = GetVehiclePedIsUsing(Ped)
+				local VRpm = GetVehicleCurrentRpm(Vehicle)
+				local EntitySpeed = GetEntitySpeed(Vehicle)
+				local VLocked = GetVehicleDoorLockStatus(Vehicle)
+				local VFuel = Entity(Vehicle)["state"]["Fuel"] or 0
+				local VEngineHealth = GetVehicleEngineHealth(Vehicle)
+				local VSpeed = math.ceil(EntitySpeed * 3.6)
+
+				if GetPedInVehicleSeat(Vehicle,-1) == Ped then
+					if GetVehicleDirtLevel(Vehicle) > 0.0 then
+						SetVehicleDirtLevel(Vehicle,0.0)
+					end
+
+					if Entity(Vehicle)["state"]["Drift"] then
+						local Class = GetVehicleClass(Vehicle)
+						if (Class >= 0 and Class <= 7) or Class == 9 then
+							if IsControlPressed(1,21) then
+								if VSpeed <= 75.0 and not GetDriftTyresEnabled(Vehicle) then
+									SetDriftTyresEnabled(Vehicle,true)
+									SetVehicleReduceGrip(Vehicle,true)
+									SetReduceDriftVehicleSuspension(Vehicle,true)
+								end
+							else
+								if GetDriftTyresEnabled(Vehicle) then
+									SetDriftTyresEnabled(Vehicle,false)
+									SetVehicleReduceGrip(Vehicle,false)
+									SetReduceDriftVehicleSuspension(Vehicle,false)
+								end
+							end
+						end
+					end
+
+					if not IsPedOnAnyBike(Ped) and not IsPedInAnyHeli(Ped) and not IsPedInAnyBoat(Ped) and not IsPedInAnyPlane(Ped) then
+						if not LocalPlayer["state"]["Races"] and VSpeed ~= LastSpeed then
+							if (LastSpeed - VSpeed) >= (Entity(Vehicle)["state"]["Seatbelt"] and 125 or 100) then
+								VehicleTyreBurst(Vehicle)
+							end
+
+							LastSpeed = VSpeed
+						end
+
+						local Roll = GetEntityRoll(Vehicle)
+						if (Roll > 75.0 or Roll < -75.0) and math.random(100) <= 50 then
+							VehicleTyreBurst(Vehicle)
+						end
+					end
+
+					for Number,v in pairs(Spike) do
+						if #(GetEntityCoords(Vehicle) - v["Coords"]) <= 10 then
+							for Index = 1,#Tyres do
+								local BoneIndex = GetEntityBoneIndexByName(Vehicle,Tyres[Index]["Bone"])
+								local TirePosition = GetWorldPositionOfEntityBone(Vehicle,BoneIndex)
+
+								if IsPointInAngledArea(TirePosition,v["Min"],v["Max"],0.45,false,false) then
+									TriggerServerEvent("inventory:StoreObjects",Number)
+									VehicleTyreBurst(Vehicle)
+								end
+							end
+						end
+					end
+				end
+
+				if ActualVehicle ~= Vehicle then
+					SendNUIMessage({ Action = "Vehicle", Payload = true })
+					ActualVehicle = Vehicle
+				end
+
+				if VEngineHealth ~= EngineHealth then
+					SendNUIMessage({ Action = "EngineHealth", Payload = VEngineHealth })
+					VEngineHealth = EngineHealth
+				end
+
+				if Locked ~= VLocked then
+					SendNUIMessage({ Action = "Locked", Payload = VLocked })
+					Locked = VLocked
+				end
+
+				if NitroActive then
+					SendNUIMessage({ Action = "Nitro", Payload = NitroFuel })
+					Nitro = NitroFuel
+				else
+					local EntityState = Entity(Vehicle).state.Nitro or 0
+					if EntityState ~= Nitro then
+						SendNUIMessage({ Action = "Nitro", Payload = EntityState })
+						Nitro = EntityState
+					end
+				end
+
+				if Fuel ~= VFuel then
+					SendNUIMessage({ Action = "Fuel", Payload = VFuel })
+					Fuel = VFuel
+				end
+
+				if Speed ~= VSpeed then
+					SendNUIMessage({ Action = "Speed", Payload = VSpeed })
+					Speed = VSpeed
+				end
+
+				if not GetIsVehicleEngineRunning(Vehicle) then
+					VRpm = 0.0
+				end
+
+				if Rpm ~= VRpm then
+					SendNUIMessage({ Action = "Rpm", Payload = VRpm })
+					Rpm = VRpm
+				end
+			else
+				if ActualVehicle then
+					ActualVehicle = nil
+					SendNUIMessage({ Action = "Vehicle", Payload = false })
+
+					Locked = false
+					SendNUIMessage({ Action = "Locked", Payload = false })
+
+					Nitro = 0
+					SendNUIMessage({ Action = "Nitro", Payload = 0 })
+
+					Speed = 0
+					SendNUIMessage({ Action = "Speed", Payload = 0 })
+				end
+
+				if LastSpeed ~= 0 then
+					LastSpeed = 0
+				end
+			end
+
+			if InVehicle or Radar then
+				if not IsMinimapRendering() then
+					SendNUIMessage({ Action = "Map", Payload = true })
+					SetBigmapActive(false,false)
+					DisplayRadar(true)
+				end
+			elseif not InVehicle and not Radar and IsMinimapRendering() then
+				SendNUIMessage({ Action = "Map", Payload = false })
+				DisplayRadar(false)
+			end
+		end
+
+		Wait(TimeDistance)
+	end
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VEHICLETYREBURST
+-----------------------------------------------------------------------------------------------------------------------------------------
+function VehicleTyreBurst(Vehicle)
+	if DoesEntityExist(Vehicle) then
+		local WheelIndex
+		local NumberWheels = GetVehicleNumberOfWheels(Vehicle)
+
+		if NumberWheels == 2 then
+			WheelIndex = (math.random(2) - 1) * 4
+		elseif NumberWheels == 4 then
+			local Round = math.random(4) - 1
+			WheelIndex = (Round > 1) and (Round + 2) or Round
+		elseif NumberWheels == 6 then
+			WheelIndex = math.random(6) - 1
+		else
+			return
+		end
+
+		if GetTyreHealth(Vehicle,WheelIndex) == 1000.0 then
+			SetVehicleTyreBurst(Vehicle,WheelIndex,true,1000.0)
+		end
+
+		if math.random(100) <= 25 then
+			VehicleTyreBurst(Vehicle)
+		end
+	end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- NITROENABLE
+-----------------------------------------------------------------------------------------------------------------------------------------
+function NitroEnable()
+	if GetNetworkTime() < NitroButton or IsPauseMenuActive() then
+		return false
+	end
+
+	local Ped = PlayerPedId()
+	if not IsPedInAnyVehicle(Ped) then
+		return false
+	end
+
+	local Vehicle = GetVehiclePedIsUsing(Ped)
+	if GetPedInVehicleSeat(Vehicle,-1) ~= Ped then
+		return false
+	end
+
+	NitroButton = GetNetworkTime() + 1000
+
+	local VehicleState = Entity(Vehicle).state
+	NitroFuel = VehicleState.Nitro or 0
+
+	if NitroFuel < 1 or Speed <= 10 or GetVehicleTopSpeedModifier(Vehicle) >= 100.0 then
+		return false
+	end
+
+	NitroActive = true
+	LocalPlayer.state:set("Nitro",true,false)
+	VehicleState:set("NitroFlame",true,true)
+
+	SetVehicleRocketBoostActive(Vehicle,true)
+	ModifyVehicleTopSpeed(Vehicle,100.0)
+	SetVehicleBoostActive(Vehicle,true)
+
+	CreateThread(function()
+		while NitroActive and DoesEntityExist(Vehicle) do
+			Wait(100)
+
+			NitroFuel = NitroFuel - 10
+
+			if NitroFuel > 0 then
+				VehicleState:set("Nitro",NitroFuel,true)
+			else
+				LocalPlayer.state:set("Nitro",false,false)
+				VehicleState:set("NitroFlame",false,true)
+				VehicleState:set("Nitro",0,true)
+				NitroActive = false
+
+				SetVehicleRocketBoostActive(Vehicle,false)
+				SetVehicleBoostActive(Vehicle,false)
+				ModifyVehicleTopSpeed(Vehicle,0.0)
+
+				break
+			end
+		end
+	end)
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- NITRODISABLE
+-----------------------------------------------------------------------------------------------------------------------------------------
+function NitroDisable()
+	if not NitroActive then
+		return false
+	end
+
+	NitroActive = false
+	LocalPlayer.state:set("Nitro",false,false)
+
+	local Vehicle = GetLastDrivenVehicle()
+	if DoesEntityExist(Vehicle) then
+		Entity(Vehicle).state:set("Nitro",NitroFuel,true)
+		Entity(Vehicle).state:set("NitroFlame",false,true)
+
+		SetVehicleRocketBoostActive(Vehicle,false)
+		SetVehicleBoostActive(Vehicle,false)
+		ModifyVehicleTopSpeed(Vehicle,0.0)
+	end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ADDSTATEBAGCHANGEHANDLER
+-----------------------------------------------------------------------------------------------------------------------------------------
+AddStateBagChangeHandler("NitroFlame",nil,function(Name,Key,Value)
+	local Network = parseInt(Name:gsub("entity:",""))
+	if NetworkDoesNetworkIdExist(Network) then
+		local Vehicle = NetToVeh(Network)
+		if DoesEntityExist(Vehicle) then
+			SetVehicleNitroEnabled(Vehicle,Value)
+		end
+	end
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ACTIVENITRO
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterCommand("+activeNitro",NitroEnable)
+RegisterCommand("-activeNitro",NitroDisable)
+RegisterKeyMapping("+activeNitro","Ativação do nitro.","keyboard","LMENU")
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- THREADBELT
+-----------------------------------------------------------------------------------------------------------------------------------------
+CreateThread(function()
+	while true do
+		local TimeDistance = 999
+		if LocalPlayer["state"]["Active"] then
+			local Ped = PlayerPedId()
+			if IsPedInAnyVehicle(Ped) then
+				if not IsPedOnAnyBike(Ped) and not IsPedInAnyHeli(Ped) and not IsPedInAnyBoat(Ped) and not IsPedInAnyPlane(Ped) then
+					TimeDistance = 1
+
+					if SeatbeltLock then
+						DisableControlAction(0,75,true)
+						DisableControlAction(27,75,true)
+					end
+
+					if Speed ~= SeatbeltSpeed then
+						local Vehicle = GetVehiclePedIsUsing(Ped)
+						if not Entity(Vehicle)["state"]["Seatbelt"] and not SeatbeltLock and (SeatbeltSpeed - Speed) >= 100 then
+							ApplyDamageToPed(Ped,25,false)
+
+							SetEntityNoCollisionEntity(Ped,Vehicle,false)
+							SetEntityNoCollisionEntity(Vehicle,Ped,false)
+							TriggerServerEvent("hud:VehicleEject",SeatbeltVelocity)
+
+							SetTimeout(500,function()
+								SetEntityNoCollisionEntity(Ped,Vehicle,true)
+								SetEntityNoCollisionEntity(Vehicle,Ped,true)
+							end)
+						end
+
+						SeatbeltVelocity = GetEntityVelocity(Vehicle)
+						SeatbeltSpeed = Speed
+					end
+				end
+			else
+				if SeatbeltSpeed ~= 0 then
+					SeatbeltSpeed = 0
+				end
+
+				if SeatbeltLock then
+					SendNUIMessage({ Action = "Seatbelt", Payload = false })
+					SeatbeltLock = false
+				end
+
+				if NitroActive then
+					NitroDisable()
+				end
+			end
+		end
+
+		Wait(TimeDistance)
+	end
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SEATBELTZ
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterCommand("Seatbeltz",function(source)
+	local Ped = PlayerPedId()
+	if IsPedInAnyVehicle(Ped) and not IsPedOnAnyBike(Ped) and not IsPedInAnyHeli(Ped) and not IsPedInAnyBoat(Ped) and not IsPedInAnyPlane(Ped) then
+		if SeatbeltLock then
+			TriggerEvent("sounds:Private","beltoff",0.5)
+			SendNUIMessage({ Action = "Seatbelt", Payload = false })
+			SeatbeltLock = false
+		else
+			TriggerEvent("sounds:Private","belton",0.5)
+			SendNUIMessage({ Action = "Seatbelt", Payload = true })
+			SeatbeltLock = true
+
+			local Vehicle = GetVehiclePedIsUsing(Ped)
+			if Entity(Vehicle)["state"]["Seatbelt"] then
+				TriggerEvent("Notify","Cinto de Segurança","Cinto de Corrida colocado.","verde",5000)
+			end
+		end
+	end
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- KEYMAPPING
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterKeyMapping("Seatbeltz","Colocar/Retirar o cinto.","keyboard","G")
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SPIKES:ADICIONAR
+-----------------------------------------------------------------------------------------------------------------------------------------
+AddEventHandler("spikes:Adicionar",function(Number,Coords,Min,Max)
+	Spike[Number] = {
+		["Min"] = Min, ["Max"] = Max,
+		["Coords"] = vec3(Coords[1],Coords[2],Coords[3])
+	}
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SPIKES:REMOVER
+-----------------------------------------------------------------------------------------------------------------------------------------
+AddEventHandler("spikes:Remover",function(Number)
+	if Spike[Number] then
+		Spike[Number] = nil
+	end
+end)

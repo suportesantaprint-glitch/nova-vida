@@ -1,0 +1,72 @@
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VRP
+-----------------------------------------------------------------------------------------------------------------------------------------
+local Tunnel = module("vrp","lib/Tunnel")
+local Proxy = module("vrp","lib/Proxy")
+vRP = Proxy.getInterface("vRP")
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CONNECTION
+-----------------------------------------------------------------------------------------------------------------------------------------
+Lil = {}
+Tunnel.bindInterface("arena",Lil)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GLOBALSTATE
+-----------------------------------------------------------------------------------------------------------------------------------------
+for _,v in pairs(Zones) do
+	GlobalState["Arena:"..v["Route"]] = 0
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CHECKENTER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CheckEnter(Table)
+	local source = source
+	local Passport = vRP.Passport(source)
+	if Passport and vRP.SaveTemporary(Passport,source,Table) then
+		return true
+	end
+
+	return false
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CHECKEXIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CheckExit()
+	local source = source
+	local Passport = vRP.Passport(source)
+	if Passport and vRP.ApplyTemporary(Passport,source) then
+		return true
+	end
+
+	return false
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ARENA:DEATH
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterServerEvent("arena:Death")
+AddEventHandler("arena:Death",function(OtherSource,Route)
+	local source = source
+	local Passport = vRP.Passport(source)
+	local OtherPassport = vRP.Passport(OtherSource)
+
+	if not (Passport and OtherPassport) or Passport == OtherPassport then
+		return false
+	end
+
+	if not (vRP.DoesEntityExist(source) and vRP.DoesEntityExist(OtherSource)) then
+		return false
+	end
+
+	local Identity = vRP.Identity(Passport)
+	local OtherIdentity = vRP.Identity(OtherPassport)
+	if not (Identity and OtherIdentity) then
+		return false
+	end
+
+	for _,Sources in pairs(vRP.Players()) do
+		async(function()
+			if Player(Sources).state.Arena and Player(Sources).state.Route == Route then
+				TriggerClientEvent("domination:KillFeed",Sources,OtherIdentity.Name,Identity.Name)
+			end
+		end)
+	end
+end)

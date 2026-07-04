@@ -1,0 +1,1736 @@
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VRP
+-----------------------------------------------------------------------------------------------------------------------------------------
+local Tunnel = module("vrp","lib/Tunnel")
+local Proxy = module("vrp","lib/Proxy")
+vRP = Proxy.getInterface("vRP")
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CONNECTION
+-----------------------------------------------------------------------------------------------------------------------------------------
+Lil = {}
+Tunnel.bindInterface("mdt",Lil)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VARIABLES
+-----------------------------------------------------------------------------------------------------------------------------------------
+local Patrols = {}
+local Operations = {}
+local Permission = {}
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- MDT:OPEN
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterServerEvent("mdt:Open")
+AddEventHandler("mdt:Open",function(Group)
+  local source = source
+  local Passport = vRP.Passport(source)
+	Permission[Passport] = Passport and vRP.HasPermission(Passport, Group) and Group
+  TriggerClientEvent("dynamic:Close",source)
+  TriggerClientEvent("mdt:Opened",source)
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DEPARTMENT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Department()
+  local source = source
+  local Passport = vRP.Passport(source)
+  return Passport and Permission[Passport]
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- PENALCODE 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.PenalCode(Mode)
+    if Mode == "Arrest" then
+      local Articles = exports.oxmysql:query_async("SELECT id AS Id, id AS Value, Section, Article, Contravention, Fine, Arrest, Bail, `Order` FROM mdt_creative_penalcode_articles")
+      return Articles
+  elseif Mode == "Fine" then
+      local Articles = exports.oxmysql:query_async("SELECT id AS Id, id AS Value, Article, Contravention, Fine, Bail, Arrest, CONCAT(Article, ' - ', Contravention) AS Label FROM mdt_creative_penalcode_articles WHERE Fine > 0")
+      return Articles
+  else
+      local Data = {}
+      local Sections = exports.oxmysql:query_async("SELECT id, `Order`, Type, Description, Title FROM mdt_creative_penalcode_sections")
+      for _, Section in ipairs(Sections) do
+          local Articles = exports.oxmysql:query_async("SELECT id AS Id, Article, Contravention, Fine, `Order`, Bail, Arrest FROM mdt_creative_penalcode_articles WHERE Section = ?", { Section.id })
+
+          Data[tostring(Section.id)] = { Order = Section.Order, Infractions = Articles, Id = Section.id, Type = Section.Type, Description = Section.Description, Title = Section.Title }
+      end
+      return Data
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEPENALCODE 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreatePenalCode(Mode,Data)
+	if Mode == "Section" then
+		local Order = 0
+		local Consult = exports["oxmysql"]:query_async("SELECT * FROM mdt_creative_penalcode_sections")
+
+		if Consult and #Consult > 0 then
+			for k,v in pairs(Consult) do
+				Order = v.Order + 1
+			end
+		else
+			Order = 1
+		end
+
+		exports.oxmysql:insert_async("INSERT INTO mdt_creative_penalcode_sections (Title, Description, Type, `Order`) VALUES (?, ?, ?, ?)", { Data.Title, Data.Description, Data.Type, Order })
+  
+	elseif Mode == "Article" then
+		local Order = 0
+		local Consult = exports["oxmysql"]:query_async("SELECT * FROM mdt_creative_penalcode_articles WHERE Section = ?", { Data.Section })
+		if Consult and #Consult > 0 then
+			for k,v in pairs(Consult) do
+				Order = v.Order + 1
+			end
+		else
+			Order = 1
+		end
+		exports.oxmysql:insert_async("INSERT INTO mdt_creative_penalcode_articles (Section, Article, Contravention, Fine, Bail, Arrest, `Order`) VALUES (?, ?, ?, ?, ?, ?, ?)", { Data.Section, Data.Article, Data.Contravention, Data.Fine, Data.Bail, Data.Arrest or false, Order })
+	end
+	return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEPENALCODE 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdatePenalCode(Id,Mode,Data)
+	local source = source
+	
+	if Mode == "Section" then
+		exports.oxmysql:execute_async("UPDATE mdt_creative_penalcode_sections SET Title = ?, Description = ?, Type = ? WHERE id = ?", { Data.Title, Data.Description, Data.Type, Id })
+	elseif Mode == "Article" then
+		exports.oxmysql:execute_async("UPDATE mdt_creative_penalcode_articles SET Article = ?, Contravention = ?, Fine = ?, Bail = ?, Arrest = ? WHERE id = ?", { Data.Article, Data.Contravention, Data.Fine, Data.Bail, Data.Arrest, Id })
+    TriggerClientEvent("mdt:Notify", source, "Sucesso", "Codigo Penal Atualizado.", "verde")
+	end
+	
+
+	return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYPENALCODE 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyPenalCode(Identifier,Mode)
+	if Mode == "Section" then
+		exports.oxmysql:execute_async("DELETE FROM mdt_creative_penalcode_sections WHERE id = ?", { Identifier })
+	elseif Mode == "Article" then
+		exports.oxmysql:execute_async("DELETE FROM mdt_creative_penalcode_articles WHERE id = ?", { Identifier })
+	end
+	return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ORDERPENALCODE
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.OrderPenalCode(Identifier, Mode, Direction, Section)
+    local TableName
+
+    if Mode == "Section" and Identifier ~= nil then
+        TableName = "mdt_creative_penalcode_sections"
+    elseif Mode == "Article" and Section ~= nil then
+        TableName = "mdt_creative_penalcode_articles"
+    else
+        return
+    end
+
+    local Consult = exports.oxmysql:single_async("SELECT `Order` FROM "..TableName.." WHERE id = ?",{ Identifier })
+    if not Consult then return end
+
+    local CurrentOrder = Consult.Order
+    local TargetOrder = Direction == "Up" and (CurrentOrder - 1) or (CurrentOrder + 1)
+
+    local Neighbor = exports.oxmysql:single_async("SELECT id FROM "..TableName.." WHERE `Order` = ?",{ TargetOrder })
+    if not Neighbor then return end
+
+    exports.oxmysql:update_async("UPDATE "..TableName.." SET `Order` = CASE WHEN id = @Id THEN @TargetOrder WHEN id = @NeighborId THEN @CurrentOrder END WHERE id IN (@Id, @NeighborId)",{ Id = Identifier, NeighborId = Neighbor.id, CurrentOrder = CurrentOrder, TargetOrder = TargetOrder })
+
+    return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- PLAYER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Player()
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy, Name = vRP.HasPermission(Passport, Permission)
+    local Permissions = Config.OtherPermissions[Permission] or Config.Permissions
+    local PermissionsResult = {}
+
+    for Category, CategoryInfo in pairs(Permissions) do
+      if type(CategoryInfo) == "table" then
+        PermissionsResult[Category] = {}
+        for SubCategory, Level in pairs(Permissions[Category]) do
+          PermissionsResult[Category][SubCategory] = Level > 0 and Level >= Hierarchy or Level < 0 and false or Level == 0 and true
+        end
+      else
+        PermissionsResult[Category] = CategoryInfo > 0 and CategoryInfo >= Hierarchy or CategoryInfo < 0 and false or CategoryInfo == 0 and true
+      end
+    end
+    local Player = { Name = vRP.FullName(Passport), Level = Hierarchy, Passport = Passport }
+    local Group = { Max = vRP.Permissions(Permission, "Members"), Name = Name, Hierarchy = vRP.Hierarchy(Permission) }
+
+    return { Group, Player, PermissionsResult }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- HOME
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Home()
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  local Consult = exports["oxmysql"]:query_async("SELECT * FROM mdt_creative_board WHERE Permission = @Permission", { Permission = Permission })
+  
+  local Title = "Titulo do aviso"
+  local Description = "Descrição do aviso."
+  
+  if Consult and Consult[1] then
+      Title = Consult[1].Title or Title
+      Description = Consult[1].Description or Description
+  end
+  
+  local Divisions = {}
+  local Hierarchy = vRP.Hierarchy(Permission) or {}
+  for Level, _ in pairs(Hierarchy) do
+      Divisions[#Divisions + 1] = { Amount = vRP.AmountService(Permission,Level), Name = vRP.NameHierarchy(Permission,Level) }
+  end
+  
+  return { Title = Title, Description = Description, Divisions = Divisions }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEBOARD
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateBoard(Title,Description)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Board == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", " Você não possui permissões necessárias.", "vermelho")
+      return false
+  end
+
+  local Consult = exports["oxmysql"]:query_async("SELECT * FROM mdt_creative_board WHERE Permission = @Permission", { Permission = Permission })
+  if Consult[1] then
+    exports.oxmysql:execute_async("UPDATE mdt_creative_board SET Title = ?, Description = ? WHERE Permission = ?", { Title,Description,Permission })
+  else
+    exports.oxmysql:execute_async("INSERT INTO mdt_creative_board (Title, Description, Permission) VALUES (?, ?, ?)", { Title,Description,Permission })
+  end
+
+  local Name = vRP.FullName(Passport)
+  local Groups = vRP.NumPermission(Permission)
+  for _, Target in pairs(Groups) do
+    if Target ~= source then
+      TriggerClientEvent("Notify", Target, Name, "<b class=\"text-white\">"..Title.."</b>: ".. Description, "amarelo")
+    end
+  end
+
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SEARCHOFFICER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.SearchOfficer(Search,Select)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Search = tostring(Search):lower()
+  local Results = {}
+
+  local Groups = vRP.DataGroups(Permission)
+  for Target in pairs(Groups) do
+      local Identity = vRP.Identity(Target)
+      if Identity then
+          local Found = false
+          if tostring(Target) == Search then
+              Found = true
+          else
+              if Identity["Name"] and Identity["Name"]:lower():find(Search) then
+                  Found = true
+              elseif Identity["Lastname"] and Identity["Lastname"]:lower():find(Search) then
+                  Found = true
+              end
+          end
+
+          if Found then
+              Results[#Results+1] = { Passport = Target,Name = vRP.FullName(Target) }
+          end
+      end
+  end
+
+  return Results
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SEARCHOFFICER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.SearchUser(Search,Select)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Search = tostring(Search):lower()
+  local Results = {}
+
+  local Consult = vRP.Query("accounts/All")
+  for _, Account in pairs(Consult) do
+
+    local Characters = vRP.Query("characters/Characters", { License = Account.License })
+    for _, Character in pairs(Characters) do
+
+      local Identity = vRP.Identity(Character.id)
+      if Identity then
+          local Found = false
+          if tostring(Character.id) == Search then
+              Found = true
+          else
+              if Identity["Name"] and Identity["Name"]:lower():find(Search) then
+                  Found = true
+              elseif Identity["Lastname"] and Identity["Lastname"]:lower():find(Search) then
+                  Found = true
+              end
+          end
+
+          if Found then
+              Results[#Results+1] = { Passport = Character.id, Name = vRP.FullName(Character.id) }
+          end
+      end
+    end
+  end
+
+  return Results
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- USER 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.User(Passport)
+  if not Passport then
+    return
+  end
+
+  local Total, Records = 0, {}
+  local Consult = exports.oxmysql:execute_async([[ SELECT id, "fine" as Type, Timestamp, Officer, Fine, Arrest, Description, Infractions, Paid FROM mdt_creative_fines WHERE Passport = ? UNION ALL SELECT id, "arrest" as Type, Timestamp, Officer, Fine, Arrest, Description, Infractions, 0 as Paid FROM mdt_creative_arrest WHERE Passport = ? UNION ALL SELECT id, "warning" as Type, Timestamp, Officer, 0 as Fine, 0 as Arrest, Description, NULL as Infractions, 0 as Paid FROM mdt_creative_warning WHERE Passport = ? ORDER BY Timestamp DESC ]], { Passport, Passport, Passport })
+
+  for k, v in ipairs(Consult) do
+    if not v.Paid or v.Paid == 0 and v.Type == "fine" then
+      Total = Total + v.Fine
+    end
+    Records[#Records + 1] = { Id = v.id, Type = v.Type, Date = v.Timestamp, Officer = v.Officer, Fine = v.Fine, Arrest = v.Arrest, Description = v.Description, Infractions = v.Infractions, Paid = v.Paid }
+  end
+
+  local Wanted = exports.oxmysql:scalar_async([[ SELECT COUNT(*) FROM mdt_creative_wanted WHERE Passport = ? ]], { Passport })
+  local Sex = (vRP.Identity(Passport).Skin == "mp_f_freemode_01") and "F" or "M"
+
+  return { { Name = vRP.FullName(Passport), Phone = vRP.Phone(Passport), Flyingarms = vRP.DatatableInformation(Passport,"Flyingarms") or false, Firearms = vRP.DatatableInformation(Passport,"Firearms") or false, Gender = Sex, Passport = Passport, Services = vRP.Identity(Passport).Prison, Wanted = Wanted, Fines = Total, Avatar = exports.vrp:Avatar(Passport) }, Records }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- AVATAR
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Avatar(Passport, Image)
+    local source = source
+    local UserPassport = vRP.Passport(source)
+    local Permission = Permission[UserPassport]
+    local Avatar = exports.oxmysql:single_async("SELECT id FROM avatars WHERE Passport = ?", {Passport})
+    if Avatar then
+        local Consult = exports.oxmysql:execute_async("UPDATE avatars SET Image = ?, Permission = ? WHERE Passport = ?", 
+            {Image, Permission, Passport})
+        if Consult then
+            TriggerClientEvent("mdt:Notify", source, "Sucesso", "Avatar atualizado com sucesso.", "verde")
+            local UserData = Lil.User(Passport)
+            if UserData and UserData[1] then
+                TriggerClientEvent("mdt:UpdateUser", source, UserData[1])
+            end
+            
+            return true
+        else
+            TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar o avatar.", "vermelho")
+            return false
+        end
+    else
+        local Consult = exports.oxmysql:insert_async("INSERT INTO avatars (Passport, Image, Permission) VALUES (?, ?, ?)", {Passport, Image, Permission})
+        if Consult then
+            TriggerClientEvent("mdt:Notify", source, "Sucesso", "Avatar definido com sucesso.", "verde")
+            local UserData = Lil.User(Passport)
+            if UserData and UserData[1] then
+                TriggerClientEvent("mdt:UpdateUser", source, UserData[1])
+            end
+            
+            return true
+        else
+            TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao definir o avatar.", "vermelho")
+            return false
+        end
+    end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- FIREARMS 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Firearms(OtherPassport)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport,Permission)
+
+  if Passport and OtherPassport then
+    if not Config.Permissions.Firearms == Hierarchy then
+        TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+        return false
+    end
+
+    local Datatable = vRP.Datatable(OtherPassport)      
+    vRP.UpdateDatatable(OtherPassport, "Firearms", not Datatable.Firearms)
+    return true
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- FLYINGARMS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Flyingarms(OtherPassport)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  if Passport and OtherPassport then
+    local Datatable = vRP.Datatable(OtherPassport)      
+    vRP.UpdateDatatable(OtherPassport, "Flyingarms", not Datatable.Flyingarms)
+    return true
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CLEARRECORD
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.ClearRecord(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  local Records = { warning = "mdt_creative_warning", arrest = "mdt_creative_arrest", fine = "mdt_creative_fines"}
+
+  local Record = Records[Data.Type]
+  if not Record then
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Tipo de registro inválido.", "vermelho")
+    return false
+  end
+
+  local Consult = exports.oxmysql:single_async("SELECT * FROM " .. Record .. " WHERE id = ?", { Data.Id })
+  if not Consult then
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Registro não encontrado.", "vermelho")
+    return false
+  end
+
+  local Result = exports.oxmysql:execute_async("DELETE FROM " .. Record .. " WHERE id = ?", { Data.Id })
+  if Result then
+    TriggerClientEvent("mdt:Notify", source, "Sucesso", "Registro removido com sucesso.", "verde")
+    return true
+  else
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao remover o registro.", "vermelho")
+    return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CLEARRECORDS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.ClearRecords(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Warnings = exports.oxmysql:query_async("SELECT * FROM mdt_creative_warning WHERE Passport = ?", { Passport })
+  local Arrests = exports.oxmysql:query_async("SELECT * FROM mdt_creative_arrest WHERE Passport = ?", { Passport })
+  local Fines = exports.oxmysql:query_async("SELECT * FROM mdt_creative_fines WHERE Passport = ?", { Passport })
+
+  local Records = true
+  local ResultWarning = exports.oxmysql:execute_async("DELETE FROM mdt_creative_warning WHERE Passport = ?", { Passport })
+  local ResultArrest = exports.oxmysql:execute_async("DELETE FROM mdt_creative_arrest WHERE Passport = ?", { Passport })
+  local ResultFine = exports.oxmysql:execute_async("DELETE FROM mdt_creative_fines WHERE Passport = ?", { Passport })
+
+  if Records then
+    TriggerClientEvent("mdt:Notify", source, "Sucesso", "Todos os registros foram removidos com sucesso.", "verde")
+    return true
+  else
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao remover os registros.", "vermelho")
+    return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- RECORD
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Record(Data)
+  local Records = {
+      ["fine"] = "SELECT id, 'fine' as Type, Timestamp, Officer, Fine, Arrest, Description, Paid, Infractions FROM mdt_creative_fines WHERE id = ?",
+      ["arrest"] = "SELECT id, 'arrest' as Type, Timestamp, Officer, Officers, Fine, Arrest, Description, Infractions FROM mdt_creative_arrest WHERE id = ?",
+      ["warning"] = "SELECT id, 'warning' as Type, Timestamp, Officer, Description FROM mdt_creative_warning WHERE id = ?"
+  }
+
+  if not Records[Data.Type] or not Data.Id then return {} end
+
+  local Consult = exports.oxmysql:query_async(Records[Data.Type], { Data.Id })
+  if not Consult[1] then return {} end
+
+  local Result = Consult[1]
+  Result.Officer = ("#%i - %s"):format(Result.Officer, vRP.FullName(Result.Officer))
+  
+  local Infractions = json.decode(Result.Infractions)
+  if type(Infractions) == "table" and #Infractions > 0 then
+      local Placeholders = {}
+      for i = 1, #Infractions do
+          Placeholders[i] = "?"
+      end
+      local Rows = exports.oxmysql:query_async("SELECT CONCAT(Article, ' - ', Contravention) AS Label FROM mdt_creative_penalcode_articles WHERE id IN ("..table.concat(Placeholders, ",")..")", Infractions)
+      local Labels = {}
+      for _, Row in ipairs(Rows) do
+          Labels[#Labels + 1] = Row.Label
+      end
+      Result.Infractions = table.concat(Labels, ", ")
+  end
+
+  return { Id = Result.id, Type = Result.Type, Date = Result.Timestamp, Officer = Result.Officer, Officers = Result.Officers, Fine = Result.Fine, Arrest = Result.Arrest, Description = Result.Description, Infractions = Result.Infractions, Paid = Result.Paid } 
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- PATROL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Patrol()
+  return Patrols
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETPATROL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetPatrol(Identifier)
+  return Patrols[Identifier]
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEPATROL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreatePatrol(Car,Unit,Officers)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Polices = {}
+
+  repeat
+    Selected = GenerateString("DDD")
+  until Selected and not Patrols[Selected]
+
+  for _, OfficerPassport in ipairs(Officers) do
+    if OfficerPassport == Passport then
+      TriggerClientEvent("mdt:Notify",source,"Aviso","Você não pode se adicionar à patrulha.","amarelo",5000)
+      return false
+    end
+    Polices[#Polices + 1] = { Name = vRP.FullName(OfficerPassport), Passport = OfficerPassport }
+  end
+
+  Patrols[Selected] = { Unit = Unit, Car = Car, Officers = Polices, Creator = { Passport = Passport, Name = vRP.FullName(Passport) } }
+
+  TriggerClientEvent("mdt:Notify",source,"Aviso","Patrulha criada com sucesso!","verde",5000)
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEPATROL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdatePatrol(Identifier,Car,Unit,Officers)
+  local Polices = {}
+  for _, Passport in ipairs(Officers) do
+      Polices[#Polices + 1] = { Name = vRP.FullName(Passport), Passport = Passport }
+  end
+
+  Patrols[Identifier].Car = Car
+  Patrols[Identifier].Unit = Unit
+  Patrols[Identifier].Officers = Polices
+
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYPATROL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyPatrol(Identifier)
+  Patrols[Identifier] = nil
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- OPERATIONS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Operations()
+  local source = source
+  local Passport = vRP.Passport(source)
+  
+  local Operation = {}
+  for Index, Data in pairs(Operations) do
+    Operation[Index] = { Candidates = Data.Candidates, Location = Data.Location, Radio = Data.Radio, Creator = Data.Creator, Escalates = Data.Escalates or {[1] = Data.Creator} }
+  end
+  
+  return Operation
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETOPERATION
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetOperation(Identifier)
+  return Operations[tostring(Identifier)]
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEOPERATION
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateOperation(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  repeat
+    Selected = GenerateString("DDD")
+  until Selected and not Operations[Selected]
+  Operations[Selected] = { Candidates = {}, Radio = Data.Radio, Location = Data.Location, Escalates = { { Passport = Passport, Name = vRP.FullName(Passport) } }, Creator = { Passport = Passport, Name = vRP.FullName(Passport) } }
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEOPERATION
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateOperation(Id,Location,Radio)
+  Operations[Id].Location = Location
+  Operations[Id].Radio = Radio
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYOPERATION
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyOperation(Id)
+  local source = source
+  local Passport = vRP.Passport(source)
+  Operations[Id] = nil
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ESCALATEDOPERATION
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.EscalatedOperation(Identifier,Mode,Passport)
+  if Mode == "Apply" then
+    Operations[Identifier].Candidates[#Operations[Identifier].Candidates + 1] = { Passport = Passport, Name = vRP.FullName(Passport) }
+  elseif Mode == "Add" then
+    Operations[Identifier].Escalates[#Operations[Identifier].Escalates + 1] = { Passport = Passport, Name = vRP.FullName(Passport) }
+    for Index, Candidates in ipairs(Operations[Identifier].Candidates) do
+      if Candidates.Passport == Passport then
+        table.remove(Operations[Identifier].Candidates, Index)
+        break
+      end
+    end
+  elseif Mode == "Remove" then
+    Operations[Identifier].Candidates[#Operations[Identifier].Candidates + 1] = { Passport = Passport, Name = vRP.FullName(Passport) }
+    for Index, Escalates in ipairs(Operations[Identifier].Escalates) do
+      if Escalates.Passport == Passport then
+        table.remove(Operations[Identifier].Escalates, Index)
+        break
+      end
+    end
+  end
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ARRESTRECORDS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.ArrestRecords()
+  local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_arrest ORDER BY Timestamp DESC")
+  local Records = {}
+
+  for _, v in ipairs(Consult) do
+      Records[#Records + 1] = { Id = v.id, Passport = v.Passport, Name = vRP.FullName(v.Passport), Arrest = v.Arrest, Fine = v.Fine, Date = v.Timestamp, Officers = v.Officers }
+  end
+
+  return Records
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ARREST
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Arrest(Data)
+  local Passport = Data.Offender
+  local Officer = vRP.Passport(source)
+  local Timestamp = os.time()
+
+  if not Data.Infractions or #Data.Infractions == 0 then
+      return
+  end
+
+  local Articles = exports.oxmysql:query_async(("SELECT Article, `Fine`, `Arrest` FROM `mdt_creative_penalcode_articles` WHERE `id` IN (%s)"):format(string.rep("?,", #Data.Infractions):sub(1, -2)), Data.Infractions)
+  
+  local Fine, Services = 0, 0
+  for _, Article in ipairs(Articles) do
+      Fine = Fine + (Article.Fine or 0)
+      Services = Services + (Article.Arrest or 0)
+  end
+
+  if Data.ReductionFine and Data.ReductionFine > 0 then
+      Fine = math.floor(Fine * (1 - (Data.ReductionFine / 100)))
+  end
+  if Data.ReductionArrest and Data.ReductionArrest > 0 then
+      Services = math.floor(Services * (1 - (Data.ReductionArrest / 100)))
+  end
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  local Infractions = {}
+  for i = 1, #Articles do Infractions[i] = Articles[i].Article end
+  local Arrest = exports.oxmysql:insert_async("INSERT INTO `mdt_creative_arrest` (`Passport`, `Officer`, `Officers`, `Timestamp`, `Infractions`, `Arrest`, `Fine`, `Description`) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ", { Passport, Officer, Data.OfficersInvolved, Timestamp, table.concat(Infractions, ", "), Services, Fine, Description })
+
+  if Arrest then
+      if Services > 0 then
+          vRP.InsertPrison(Passport, Services)
+
+          local Target = vRP.Source(Passport)
+          if Target then
+              Player(Target)["state"]["Prison"] = true
+              TriggerClientEvent("Notify", Target, "Boolingbroke", "Todas as lixeiras do pátio estão disponíveis para <b>vasculhar</b> em troca de redução penal.", "amarelo", 30000)
+          end
+      end
+
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Prisão efetuada com sucesso.", "verde")
+  end
+
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- FINE
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Fine(Data)
+  if not Data then
+      return
+  end
+  
+  local source = source
+  local Passport = Data.Offender
+  local Officer = vRP.Passport(source)
+  local Timestamp = os.time()
+
+  local Articles = exports.oxmysql:query_async( ("SELECT `Fine` FROM `mdt_creative_penalcode_articles` WHERE `id` IN (%s)"):format(table.concat(Data.Infractions, ","):gsub("[^,]", "?")), Data.Infractions)
+
+  local Fine = 0
+  for _, Article in ipairs(Articles) do
+      Fine = Fine + (Article.Fine or 0)
+  end
+
+  if Data.ReductionFine and Data.ReductionFine > 0 then
+      Fine = math.floor(Fine * (1 - (Data.ReductionFine / 100)))
+  end
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  exports.oxmysql:insert_async( "INSERT INTO `mdt_creative_fines` (`Passport`, `Officer`, `Timestamp`, `Infractions`, `Fine`, `Description`, `Paid`, `Arrest`) VALUES (?, ?, ?, ?, ?, ?, 0, NULL)", { Passport, Officer, Timestamp, json.encode(Data.Infractions), Fine, Description or "" } )
+
+  TriggerClientEvent("mdt:Notify", source, "Sucesso", "Multa aplicada com sucesso.", "verde")
+
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- WARNING
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Warning(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Target = Data.Passport
+  local Timestamp = os.time()
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  if not Config.Permissions.Warning == Hierarchy then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Você não possui permissões necessárias.","vermelho")
+    return false
+  end
+
+  local Consult = exports.oxmysql:execute_async("INSERT INTO mdt_creative_warning (Passport, Officer, Timestamp, Description) VALUES (?, ?, ?, ?)", { Target, Passport, Timestamp, Description } )
+  if Consult then
+    TriggerClientEvent("mdt:Notify",source,"Sucesso","Aviso registrado com sucesso.","verde")
+    return true
+  else
+    TriggerClientEvent("mdt:Notify",source,"Erro","Falha ao registrar o aviso.","vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- POLICEREPORTS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.PoliceReports()
+  local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_reports")
+  local Reports = {}
+
+  for k,v in pairs(Consult) do
+    Reports[#Reports+1] = { Creator = { Name = vRP.FullName(v.Officer) }, Date = v.Timestamp, Id = v.id, Applicant = vRP.FullName(v.Officer), Archive = v.Archive, Title = v.Title } 
+  end
+
+  return Reports
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETPOLICEREPORT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetPoliceReport(Id)
+  local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_reports WHERE id = ?", { Id })
+  local Reports = {}
+  
+  for k, v in pairs(Consult) do
+      local Suspects = {}
+      local List = json.decode(v.Suspects) or {}
+      
+      for _, Passport in ipairs(List) do
+          Suspects[#Suspects + 1] = { Name = vRP.FullName(Passport), Passport = Passport }
+      end
+      
+      Reports[#Reports + 1] = { Date = v.Timestamp, Description = v.Description, Title = v.Title, Creator = { Name = vRP.FullName(v.Officer), Passport = v.Officer }, Applicant = { Name = vRP.FullName(v.Officer), Passport = v.Officer }, Suspects = Suspects }
+  end
+  
+  return Reports[1] or {}
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEPOLICEREPORT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreatePoliceReport(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.PoliceReports.Create == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não tem permissão para criar relatórios.", "vermelho")
+      return false
+  end
+
+  local Suspects = {}
+  for _, Suspect in ipairs(Data.Suspects) do
+      table.insert(Suspects, tonumber(Suspect))
+  end
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  local Reports = exports.oxmysql:insert_async("INSERT INTO mdt_creative_reports (Passport, Title, Suspects, Officer, Timestamp, Description, Archive) VALUES (?, ?, ?, ?, ?, ?, ?)",{ Passport, Data.Title, json.encode(Suspects), Passport, os.time(), Description, 0 })
+
+  if Reports then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Relatório criado com sucesso.", "verde")
+      
+      return { Id = Reports, Title = Data.Title, Description = Description, Date = os.time(), Suspects = Suspects, Archive = 0, Creator = { Name = vRP.FullName(Passport), Passport = Passport } }
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao criar relatório.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEPOLICEREPORT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdatePoliceReport(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  local Existing = exports.oxmysql:single_async("SELECT * FROM mdt_creative_reports WHERE id = ?", {Data.Id})
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  local Update = { Title = Data.Title or Existing.Title, Description = Description or Existing.Description, Suspects = Data.Suspects and json.encode(Data.Suspects) or Existing.Suspects, Archive = Data.Archive ~= nil and Data.Archive or Existing.Archive }
+
+  local Consult = exports.oxmysql:execute_async("UPDATE mdt_creative_reports SET Title = ?, Description = ?, Suspects = ?, Archive = ? WHERE id = ?",{ Update.Title, Update.Description, Update.Suspects, Update.Archive, Data.Id })
+
+  if Consult then
+      local Reports = exports.oxmysql:single_async("SELECT * FROM mdt_creative_reports WHERE id = ?", {Data.Id})
+
+      local Suspects = json.decode(Reports.Suspects) or {}
+      local Formatted = {}
+      for _, Suspect in ipairs(Suspects) do
+          table.insert(Formatted, { Passport = Suspect, Name = vRP.FullName(Suspect) })
+      end
+
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Relatório #"..Data.Id.." atualizado", "verde")
+      
+      return { Id = Reports.id, Title = Reports.Title, Description = Reports.Description, Date = Reports.Timestamp, Suspects = Formatted, Archive = Reports.Archive, Creator = { Name = vRP.FullName(Reports.Passport), Passport = Reports.Passport }}
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar relatório", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ARCHIVEPOLICEREPORT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.ArchivePoliceReport(Reports, Status)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Existing = exports.oxmysql:single_async("SELECT * FROM mdt_creative_reports WHERE id = ?", {Reports})
+
+  if not Config.Permissions.PoliceReports.Archive == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não tem permissão para criar relatórios.", "vermelho")
+      return false
+  end
+
+  local Consult = exports.oxmysql:execute_async("UPDATE mdt_creative_reports SET Archive = ? WHERE id = ?",{ Status and 1 or 0, Reports })
+
+  if Consult then
+      local Action = Status and "arquivado" or "desarquivado"
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", ("Relatório #%s %s com sucesso"):format(Reports,Action), "verde")
+      
+      return { Id = Reports, Archive = Status and 1 or 0, Title = Existing.Title, Creator = { Name = vRP.FullName(Existing.Passport), Passport = Existing.Passport }}
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar status do relatório", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- WANTED
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Wanted()
+  local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_wanted ORDER BY Timestamp DESC")
+  local WantedList = {}
+
+  for _, v in ipairs(Consult) do
+      WantedList[#WantedList + 1] = { Citizen = { Passport = v.Passport, Name = vRP.FullName(v.Passport) }, Id = v.id, Date = v.Timestamp, Image = v.Image, Description = v.Description, Officer = v.Officer and ("#%i - %s"):format(v.Officer, vRP.FullName(v.Officer)) or "Desconhecido", HowLong = v.HowLong }
+  end
+
+  return WantedList
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETWANTED
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetWanted(Id)
+	local source = source
+	local Passport = vRP.Passport(source)
+	local permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, permission)
+
+	if not Config.Permissions.Wanted.View == Hierarchy then
+		TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+		return false
+	end
+
+	local Wanted = exports.oxmysql:single_async(" SELECT id, Passport, Image, Accusations, Officer, Timestamp, HowLong, Description FROM mdt_creative_wanted WHERE id = ? ", { Id })
+  
+	if not Wanted then
+		TriggerClientEvent("mdt:Notify", source, "Erro", "Registro não encontrado.", "vermelho")
+		return false
+	end
+
+	return { Id = Wanted.id, Citizen = { Passport = Wanted.Passport, Name = vRP.FullName(Wanted.Passport), Services = vRP.Identity(Wanted.Passport).Prison }, Date = Wanted.Timestamp, Image = Wanted.Image, Description = Wanted.Description, Accusations = Wanted.Accusations, Officer = { Passport = Wanted.Officer, Name = vRP.FullName(Wanted.Officer) }, HowLong = Wanted.HowLong, CreatedAt = Wanted.Timestamp }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEWANTED
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateWanted(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Wanted.Create == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+      return false
+  end
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  local Timestamp = os.time()
+  local Result = exports.oxmysql:insert_async("INSERT INTO mdt_creative_wanted (Passport, Image, Accusations, Officer, Timestamp, HowLong, Description) VALUES (?, ?, ?, ?, ?, ?, ?)", { Data.Passport or Data.Citizen, Data.Image, json.encode(Data.Accusations), Passport, Timestamp, Data.HowLong, Description or "" })
+
+  if Result then
+      local NewRecord = { Citizen = { Passport = Data.Passport or Data.Citizen, Name = vRP.FullName(Data.Passport or Data.Citizen) }, Id = Result, Date = Timestamp, Image = Data.Image, Description = Description or "", Officer = ("#%i - %s"):format(Passport, vRP.FullName(Passport)), HowLong = Data.HowLong }
+
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Registro de procurado criado com sucesso.", "verde")
+      return NewRecord
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao criar registro de procurado no banco de dados.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEWANTED
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateWanted(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Wanted.Edit == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+      return false
+  end
+
+  local Description = Data.Description
+  Description = Description:gsub("<script>.-</script>", "")
+  Description = Description:gsub("on%w+=", "data-removed=")
+
+  local Result = exports.oxmysql:execute_async("UPDATE mdt_creative_wanted SET Description = ?, HowLong = ?, Image = ? WHERE id = ?", { Description, Data.HowLong, Data.Image, Data.Id })
+
+  if Result then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Registro de procurado atualizado com sucesso.", "verde")
+      return true
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar registro de procurado.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYWANTED
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyWanted(Id)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Wanted.Delete == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+      return false
+  end
+
+  local Result = exports.oxmysql:execute_async("DELETE FROM mdt_creative_wanted WHERE id = ?", { Id })
+
+  if Result then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Registro de procurado removido com sucesso.", "verde")
+      return true
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao remover registro de procurado.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- VEHICLE
+-----------------------------------------------------------------------------------------------------------------------------------------
+RegisterServerEvent("mdt:Vehicle")
+AddEventHandler("mdt:Vehicle", function(Entity)
+    local source = source
+    local Plate = Entity[1]
+    local Passport = vRP.Passport(source)
+    local OtherPassport = vRP.PassportPlate(Plate)
+    local Service = vRP.HasService(Passport,"Policia")
+    
+    if not Permission[Passport] then
+        for Group in pairs(Groups.Policia?.Permission) do
+            if Player(source).state?[Group] then
+                Permission[Passport] = Group
+                break
+            end
+        end
+    end
+
+    if Service and OtherPassport then
+        local Vehicle = vRP.Query("vehicles/plateVehicles", { Plate = Plate })
+        if Vehicle[1] then
+            if not Vehicle[1]["Arrest"] then
+                TriggerClientEvent("mdt:Vehicle", source, OtherPassport, vRP.FullName(OtherPassport), Plate, Vehicle[1]["Vehicle"])
+            else
+                TriggerClientEvent("Notify", source, "Departamento Policial", "Veículo já se encontra apreendido.", "policia", 5000)
+            end
+        end
+    end
+end)
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- SEIZEDVEHICLES
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.SeizedVehicles()
+  local Consult = exports.oxmysql:query_async("SELECT v.id AS Id, v.Passport, CONCAT(p.Name, ' ', p.Lastname) AS Name, v.Image, v.Vehicle, v.Plate, v.Location, v.Timestamp AS Date, v.Description, v.Officer, CONCAT(o.Name, ' ', o.Lastname) AS OfficerName FROM mdt_creative_vehicles v LEFT JOIN characters p ON p.id = v.Passport LEFT JOIN characters o ON o.id = v.Officer ORDER BY v.Timestamp DESC")
+
+  for Index, Data in ipairs(Consult) do
+      Data.Officer = { Name = Data.OfficerName }
+      Data.OfficerName = nil
+  end
+
+    return Consult
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- INTERNALAFFAIRS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.InternalAffairs()
+    local source = source
+    local Passport = vRP.Passport(source)
+    if not Passport then return {} end
+
+    local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_internalaffairs ORDER BY Timestamp DESC", {})
+    local Affairs = {}
+
+    for k,v in pairs(Consult) do
+        Affairs[#Affairs+1] = { Creator = { Name = vRP.FullName(v.Passport), Passport = v.Passport }, Date = v.Timestamp, Id = v.id, Applicant = vRP.FullName(v.Passport), Archive = v.Archive, Title = v.Title, Description = v.Description, Accused = { Name = vRP.FullName(v.Accused), Passport = v.Accused } }
+    end
+
+    return Affairs
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEINTERNALAFFAIRS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateInternalAffairs(Data)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    local Description = Data.Description
+    Description = Description:gsub("<script>.-</script>", "")
+    Description = Description:gsub("on%w+=", "data-removed=")
+
+    local Consult = exports.oxmysql:insert_async("INSERT INTO mdt_creative_internalaffairs (Passport, Title, Accused, Officer, Timestamp, Description, Archive) VALUES (?, ?, ?, ?, ?, ?, ?)",{ Passport, Data.Title, Data.Accused, Passport, os.time(), Description, 0 })
+
+    if Consult then
+        TriggerClientEvent("mdt:Notify",source,"Sucesso","Registro criado com sucesso","verde")
+        return true
+    else
+        TriggerClientEvent("mdt:Notify",source,"Erro","Falha ao criar registro","vermelho")
+        return false
+    end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETINTERNALAFFAIRS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetInternalAffairs(Id)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    local Consult = exports.oxmysql:single_async("SELECT * FROM mdt_creative_internalaffairs WHERE id = ?", {Id})
+
+    return { Title = Consult.Title, Description = Consult.Description, Date = Consult.Timestamp, Applicant = { Name = vRP.FullName(Consult.Passport) or "Desconhecido", Passport = Consult.Passport }, Creator = { Name = vRP.FullName(Consult.Passport) or "Desconhecido", Passport = Consult.Passport }, Accused = { Name = vRP.FullName(Consult.Accused) or "Desconhecido", Passport = Consult.Accused } }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEINTERNALAFFAIRS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateInternalAffairs(Data)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    local Description = Data.Description
+    Description = Description:gsub("<script>.-</script>", "")
+    Description = Description:gsub("on%w+=", "data-removed=")
+
+    local Consult = exports.oxmysql:update_async([[UPDATE mdt_creative_internalaffairs SET Title = ?, Description = ?, Accused = ?, Officer = ?, Timestamp = ? WHERE id = ?]],{ Data.Title, Description, Data.Accused, Data.Officer or Passport, os.time(), Data.Id })
+
+    if Consult and Consult > 0 then
+        TriggerClientEvent("mdt:Notify",source,"Sucesso","Registro atualizado com sucesso","verde")
+        return true
+    else
+        TriggerClientEvent("mdt:Notify",source,"Erro","Falha ao atualizar registro ou registro não encontrado","vermelho")
+        return false
+    end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ARCHIVEINTERNALAFFAIRS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.ArchiveInternalAffairs(Id)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    local Consult = exports.oxmysql:single_async("SELECT Archive FROM mdt_creative_internalaffairs WHERE id = ?", {Id})
+
+    local Affairs = Consult.Archive == 1 and 0 or 1
+
+    local Archive = exports.oxmysql:update_async("UPDATE mdt_creative_internalaffairs SET Archive = ? WHERE id = ?",{Affairs,Id})
+
+    if Archive and Archive > 0 then
+        local Action = Affairs == 1 and "arquivado" or "desarquivado"
+        TriggerClientEvent("mdt:Notify",source,"Sucesso",("Registro %s com sucesso"):format(Action),"verde")
+        return true
+    else
+        TriggerClientEvent("mdt:Notify",source,"Erro","Falha ao atualizar registro","vermelho")
+        return false
+    end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATESEIZEDVEHICLE
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateSeizedVehicle(Data)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    local Description = Data.Description
+    Description = Description:gsub("<script>.-</script>", "")
+    Description = Description:gsub("on%w+=", "data-removed=")
+
+	  TriggerClientEvent("mdt:Refresh",source,"Close")
+    exports.oxmysql:insert("INSERT INTO mdt_creative_vehicles (Passport, Officer, Image, Vehicle, Plate, Location, Timestamp, Description ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", { Data.Passport, vRP.Passport(source), Data.Image, Data.Vehicle, Data.Plate, Data.Location, os.time(), Description }, function(Success) if Success then
+			vRP.Query("vehicles/Arrest",{ Plate = Data.Plate })
+            TriggerClientEvent("Notify",source,"Departamento Policial",("O veículo <b>%s</b> de placa <b>%s</b> foi apreendido com sucesso."):format(Data.Vehicle,Data.Plate),"verde",5000)
+        else
+            TriggerClientEvent("Notify",source,"Departamento Policial","Não foi possível apreender este veículo.","vermelho",5000)
+        end
+    end)
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- MEDALS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Medals()
+  local Medals = exports.oxmysql:query_async("SELECT * FROM mdt_creative_medals")
+  local Info = {}
+  for k,v in pairs(Medals) do
+    Info[#Info+1] = { Officers = json.decode(v.Officers), Image = v.Image, Id = v.id, Name = v.Name }
+  end
+  return Info
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetMedal(Id)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Consult = exports["oxmysql"]:single_async("SELECT id, Name, Officers, Image FROM mdt_creative_medals WHERE Id = ?", { Id })
+  local Officers = {}
+
+  for _, Passport in ipairs(json.decode(Consult.Officers)) do
+      Officers[#Officers+1] = { Passport = Passport, Name = vRP.FullName(Passport), }
+  end
+
+  return { Id = Consult.Id, Image = Consult.Image, Name = Consult.Name, Officers = Officers }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateMedal(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+
+  local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Consult = exports["oxmysql"]:insert_async("INSERT INTO mdt_creative_medals (Image, Name) VALUES (@Image, @Name)", { Image = Data["Image"], Name = Data["Name"], })
+
+  if Consult then
+    TriggerClientEvent("mdt:Notify", source, "Sucesso", "A medalha <b class=\"text-white\">" .. Data["Name"] .. "</b> foi criada com sucesso.", "verde")
+  else
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao criar a medalha <b class=\"text-white\">" .. Data["Name"] .."</b>.", "vermelho")
+    return false
+  end
+
+  return Consult
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateMedal(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Consult = exports["oxmysql"]:execute_async("UPDATE mdt_creative_medals SET Name = ?, Image = ? WHERE id = ?", { Data["Name"], Data["Image"], Data["Id"] })
+
+  if Consult then
+    TriggerClientEvent("mdt:Notify", source, "Sucesso", "A medalha <b class=\"text-white\">" .. Data["Name"] .. "</b> foi atualizada com sucesso.", "verde")
+    return true
+  else
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar a medalha <b class=\"text-white\">" .. Data["Name"] .. "</b>.", "vermelho")
+    return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ASSIGNMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.AssignMedal(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+  
+  local Consult = exports["oxmysql"]:single_async("SELECT Name, Officers FROM mdt_creative_medals WHERE Id = ?", { Data["Id"] })
+
+  if not Consult then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Medalha não encontrada.","vermelho")
+    return false
+  end
+
+  local Officers = json.decode(Consult.Officers) or {}
+  
+  for _, Member in ipairs(Officers) do
+    if tostring(Member) == tostring(Data["Officer"]) then
+      TriggerClientEvent("mdt:Notify",source,"Erro","O passaporte <b class=\"text-white\">" .. Data["Officer"] .. "</b> já possui a medalha <b class=\"text-white\">".. Consult.Name.."</b>.","vermelho")
+      return false
+    end
+  end
+
+  table.insert(Officers, Data["Officer"])
+
+  exports["oxmysql"]:execute_async("UPDATE mdt_creative_medals SET Officers = ? WHERE Id = ?", { json.encode(Officers), Data["Id"] })
+
+  local targetSource = vRP.Source(Data["Officer"])
+  if targetSource then
+    TriggerClientEvent("Notify",targetSource,Consult.Name,"Parabéns você recebeu uma medalha","verde",5000)
+    else
+  end
+  TriggerClientEvent("mdt:Notify",source,"Sucesso","Medalha atribuída.","verde")  
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- REMOVEMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.RemoveMedal(Data)
+	local source = source
+  local Passport = vRP.Passport(source)	
+	local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+	
+  local Consult = exports["oxmysql"]:single_async("SELECT Name, Officers FROM mdt_creative_medals WHERE Id = ?", { Data["Id"] })
+	
+  local Officers, Sucess = json.decode(Consult.Officers) or {}, false
+  for Index, Member in ipairs(Officers) do
+      if Member == Data["Officer"] then
+          Sucess = not Sucess
+          table.remove(Officers, Index)
+          break
+      end
+  end
+
+  exports["oxmysql"]:execute_async("UPDATE mdt_creative_medals SET Officers = ? WHERE Id = ?", { json.encode(Officers), Data["Id"] })
+	
+	if Sucess then
+		TriggerClientEvent("mdt:Notify", source, "Sucesso", "O passaporte <b class=\"text-white\">" .. Passport .. "</b> foi removido com sucesso da medalha <b class=\"text-white\">".. Consult.Name.."</b>.", "verde")
+	else
+		TriggerClientEvent("mdt:Notify", source, "Erro", "Não foi possível localizar o passaporte <b class=\"text-white\">" .. Passport .. "</b> na medalha <b class=\"text-white\">".. Consult.Name.."</b>", "vermelho")
+	end
+
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYMEDAL
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyMedal(Id)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+	
+	if not Config.Permissions.Medals.Delete == Hierarchy then
+		TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+		return false
+	end
+	
+  local Consult = exports["oxmysql"]:execute_async("DELETE FROM mdt_creative_medals WHERE id = ?", { Id })
+
+  if Consult then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "A medlha foi removida com sucesso.", "verde")
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao remover a medlha.", "vermelho")
+      return false
+  end
+
+  return Consult
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UNITS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Units(Select)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  
+  if not Select then
+    local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_units WHERE Permission = ?", { Permission })
+
+    local Units = {}
+    for k,v in pairs(Consult) do
+      Units[#Units+1] = { Officers = json.decode(v.Officers), Image = v.Image, Id = v.id, Name = v.Name }
+    end
+
+    return Units
+    
+  elseif Select then
+    local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_units WHERE Permission = ?", { Permission })
+
+    local Units = {}
+    for k,v in pairs(Consult) do
+      Units[#Units+1] = { Label = v.Name, Value = v.id, }
+    end
+
+    return Units
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- GETUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.GetUnit(Id)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Units.View == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias para visualizar unidades.", "vermelho")
+      return false
+  end
+
+  local Consult = exports.oxmysql:single_async("SELECT * FROM mdt_creative_units WHERE id = ? AND Permission = ?", {Id, Permission})
+  
+  local OfficersList = {}
+  local Officers = json.decode(Consult.Officers) or {}
+  
+  for _, Data in ipairs(Officers) do
+      OfficersList[#OfficersList + 1] = { Passport = Data, Name = vRP.FullName(Data) }
+  end
+
+  return { Name = Consult.Name, Image = Consult.Image, Officers = OfficersList, Id = Consult.id }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateUnit(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Units.Create == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias para criar unidades.", "vermelho")
+      return false
+  end
+
+  local Image = Data.Image
+
+  local Result = exports.oxmysql:insert_async("INSERT INTO mdt_creative_units (Image, Name, Permission, Officers) VALUES (?, ?, ?, ?)", {Image, Data.Name, Permission, "[]"} )
+
+  if Result then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Unidade <b>"..Data.Name.."</b> criada com sucesso.", "verde")
+      return true
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao criar a unidade.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- UPDATEUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.UpdateUnit(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  if not Config.Permissions.Units.Edit == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias para editar unidades.", "vermelho")
+      return false
+  end
+
+  local Consult = exports.oxmysql:single_async("SELECT * FROM mdt_creative_units WHERE id = ? AND Permission = ?", {Data.Id, Permission})
+
+  local Result = exports.oxmysql:execute_async("UPDATE mdt_creative_units SET Name = ?, Image = ? WHERE id = ?", {Data.Name, Data.Image or Consult.Image, Data.Id} )
+
+  if Result then
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", "Unidade <b>"..Data.Name.."</b> atualizada com sucesso.", "verde")
+      
+      return { Name = Data.Name, Image = Data.Image or Consult.Image, Id = Data.Id, Officers = json.decode(Consult.Officers) or {} }
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar a unidade.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- ASSIGNUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.AssignUnit(Data)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+  local Number = Data.UnitId or Data.Id
+  local Data = Data.Passport or Data.Officer
+
+  if not Config.Permissions.Units.Assign == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Você não tem permissão para atribuir unidades.", "vermelho")
+      return false
+  end
+
+  local Consult = exports.oxmysql:single_async("SELECT * FROM mdt_creative_units WHERE id = ? AND Permission = ?", {Number, Permission})
+
+  local Officers = json.decode(Consult.Officers) or {}
+
+  for _, Existing in ipairs(Officers) do
+      if Existing == Data then
+          TriggerClientEvent("mdt:Notify", source, "Aviso", "Este oficial já está na unidade.", "amarelo")
+          return false
+      end
+  end
+
+  table.insert(Officers, Data)
+
+  local Consult = exports.oxmysql:execute_async("UPDATE mdt_creative_units SET Officers = ? WHERE id = ?", {json.encode(Officers), Number} )
+
+  if Consult then
+      local Name = vRP.FullName(Data)
+      TriggerClientEvent("mdt:Notify", source, "Sucesso", ("Oficial %s adicionado à unidade %s"):format(Name, Consult.Name), "verde")
+      
+      local Target = vRP.Source(Data)
+      if Target then
+          TriggerClientEvent("Notify", Target, "Unidade", ("Você foi designado para a unidade %s"):format(Consult.Name), "verde", 10000)
+      end
+      return true
+  else
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao atualizar a unidade.", "vermelho")
+      return false
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- REMOVEUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DESTROYUNIT
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DestroyUnit(Id)
+    local source = source
+    local Passport = vRP.Passport(source)
+    local Permission = Permission[Passport]
+    local Hierarchy = vRP.HasPermission(Passport, Permission)
+
+    if not Config.Permissions.Units.Delete == Hierarchy then
+        TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias para remover unidades.", "vermelho")
+        return false
+    end
+
+    local Consult = exports.oxmysql:single_async("SELECT * FROM mdt_creative_units WHERE id = ? AND Permission = ?", {Id, Permission})
+
+    local Officers = json.decode(Consult.Officers) or {}
+    if #Officers > 0 then
+        TriggerClientEvent("mdt:Notify", source, "Erro", "Não é possível remover uma unidade com membros ativos.", "vermelho")
+        return false
+    end
+
+    local Result = exports.oxmysql:execute_async("DELETE FROM mdt_creative_units WHERE id = ?", {Id})
+
+    if Result then
+        TriggerClientEvent("mdt:Notify", source, "Sucesso", "Unidade <b>"..Consult.Name.."</b> removida com sucesso.", "verde")
+        return true
+    else
+        TriggerClientEvent("mdt:Notify", source, "Erro", "Falha ao remover a unidade.", "vermelho")
+        return false
+    end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- OFFICERS
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Officers(Management, Ranking)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+  local Hierarchy = vRP.HasPermission(Passport, Permission)
+  local Service = vRP.NumPermission(Permission)
+
+  if not Config.Permissions.Management.View == Hierarchy then
+      TriggerClientEvent("mdt:Notify", source, "Erro", "Sem permissão para visualizar oficiais.", "vermelho")
+      return false
+  end
+
+  local Result = {}
+  local Members = vRP.DataGroups(Permission) or {}
+
+  for Member, _ in pairs(Members) do
+      local Medals = {}
+
+      local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_medals WHERE JSON_CONTAINS(Officers, ?)", { tostring(Member) })
+      for _, Medal in pairs(Consult) do
+          Medals[#Medals+1] = { Name = Medal.Name, Image = Medal.Image }
+      end
+
+      local Units = {}
+      local Consult = exports.oxmysql:query_async("SELECT * FROM mdt_creative_units WHERE JSON_CONTAINS(Officers, ?) AND Permission = ?", { tostring(Member), Permission })
+      for _, Unit in pairs(Consult) do
+          Units[#Units+1] = { Name = Unit.Name, Image = Unit.Image }
+      end
+
+      local Data = { Name = vRP.FullName(Member), Passport = Member, Patent = vRP.HasPermission(Member, Permission), Service = Service[tostring(Member)] and 1 or 0, Units = Units, Medals = Medals }
+
+      if Ranking then
+          Data.Hours = vRP.Playing(Member, Permission)
+      elseif Management then
+          local OtherSource = vRP.Source(Member)
+          local Calculated = CompleteTimers(os.time() - (vRP.Identity(Member)["Login"] or 0))
+          Data.Status = OtherSource and "Ativo a "..Calculated or "Inativo a "..Calculated
+      end
+
+      Result[#Result+1] = Data
+  end
+
+  return Result
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- CREATEOFFICER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.CreateOfficer(Data)
+  local source = source
+  local Target = Data["Passport"]
+  local Passport = vRP.Passport(source)
+  local Identity = vRP.Identity(Target)
+  local TargetSource = vRP.Source(Target)
+  local Permission = Permission[Passport]
+
+  if Passport and Identity and Target then
+      if vRP.AmountGroups(Permission) >= vRP.Permissions(Permission, "Members") then
+          TriggerClientEvent("mdt:Notify",source,"Atenção","Limite de membros atingido.","amarelo",5000)
+          return false
+      end
+
+      TriggerClientEvent("mdt:Notify",source,"Sucesso","Um convite foi enviado ao destinatário.","verde",5000)
+      if vRP.Request(TargetSource,"Grupos","Você foi convidado(a) para participar do grupo <b class=\"text-white\">"..Permission.."</b>, gostaria de estar entrando do mesmo?") then
+          vRP.SetPermission(Target, Permission)
+          TriggerClientEvent("mdt:Notify",source,"Sucesso","Passaporte adicionado.","verde",5000)
+          return true
+      else
+          TriggerClientEvent("mdt:Notify",source,"Atenção","Convite para o grupo recusado.","amarelo",5000)
+        end
+      end
+  return false
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- HIERARCHYOFFICER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.HierarchyOfficer(Data)
+	local source = source
+	local Target, Mode = Data["Passport"], Data["Mode"]
+	local Passport = vRP.Passport(source)
+	local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+	
+  if not Config.Permissions.Management.Edit == Hierarchy then
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+    return false
+  end
+	
+	local Identity = vRP.Identity(Target) or {}
+	if Mode:find("Promote") or Mode:find("Demote") then
+	
+		vRP.SetPermission(Target, Permission, _, Mode)
+		TriggerClientEvent("mdt:Notify",source,"Sucesso","Hierarquia atualizada.","verde",5000)
+		
+		return { Passport = Target, Name = (Identity["Name"] or "Indivíduo").." "..(Identity["Lastname"] or "Indigente"), Hierarchy = vRP.HasPermission(Target, Permission), Service = vRP.Source(Target) and 1 or 0 }
+	end
+
+	return false
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DISMISSOFFICER
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DismissOfficer(Data)
+	local source = source
+	local Target = Data["Passport"]
+	local Passport = vRP.Passport(source)
+	local Permission = Permission[Passport]
+	local Hierarchy = vRP.HasPermission(Passport, Permission)
+	
+  if not Config.Permissions.Management.Dismiss == Hierarchy then
+    TriggerClientEvent("mdt:Notify", source, "Erro", "Você não possui permissões necessárias.", "vermelho")
+    return false
+  end
+	
+	if vRP.HasGroup(Target, Permission) then
+		TriggerClientEvent("mdt:Notify", source, "Sucesso", "Passaporte removido com sucesso.", "verde", 5000)
+		vRP.RemovePermission(Target, Permission)
+		return true
+	end
+
+	return false
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- BANK 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.Bank()
+    local source = source
+    local Passport = vRP.Passport(source)
+	local Permission = Permission[Passport]
+
+    local Consult = exports['oxmysql']:query_async('SELECT * FROM painel_creative_transactions WHERE Permission = @Permission LIMIT 50', { Permission = Permission })
+
+    local Transactions = {}
+    for _, Data in ipairs(Consult) do
+        table.insert(Transactions, { Player = { Passport = Data.Passport, Name = vRP.FullName(Data.Passport) }, To = { Passport = Data.Transfer, Name = vRP.FullName(Data.Transfer) }, Type = Data.Type, Value = Data.Value, Date = Data.Timestamp })
+    end
+
+    return { vRP.Permissions(Permission,"Bank"), Transactions }
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- DEPOSITBANK 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.DepositBank(Value)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  if not Value or Value <= 0 then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Valor inválido para depósito.","vermelho")
+    return false
+  end
+
+  if vRP.PaymentBank(Passport, Value) then
+    exports.oxmysql:insert_async("INSERT INTO painel_creative_transactions (Type, Passport, Value, Timestamp, Permission) VALUES (\"Deposit\", ?, ?, ?, ?)", { Passport, Value, os.time(), Permission })
+
+    vRP.PermissionsUpdate(Permission,"Bank","+",Value)
+
+    TriggerClientEvent("mdt:Notify",source,"Sucesso","Deposito realizado.","verde")
+    return true
+  else
+    TriggerClientEvent("mdt:Notify",source,"Erro","Saldo insuficiente.","vermelho")
+    return true
+  end
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- WITHDRAWBANK 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.WithdrawBank(Value)
+  local source = source
+  local Passport = vRP.Passport(source)
+  local Permission = Permission[Passport]
+
+  if not Value or Value <= 0 then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Valor inválido para saque.","vermelho")
+    return false
+  end
+
+  local Balance = vRP.Permissions(Permission,"Bank")
+
+  if Balance < Value then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Saldo insuficiente.","vermelho")
+    return false
+  end
+
+  vRP.PermissionsUpdate(Permission,"Bank","-",Value)
+
+  exports.oxmysql:insert_async("INSERT INTO painel_creative_transactions (Type, Passport, Value, Timestamp, Permission) VALUES (\"Withdraw\", ?, ?, ?, ?)", { Passport, Value, os.time(), Permission })
+
+  vRP.GiveBank(Passport,Value)
+
+  TriggerClientEvent("mdt:Notify",source,"Sucesso","Saque realizado.","verde")
+  
+  return true
+end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- TRANSFERBANK 
+-----------------------------------------------------------------------------------------------------------------------------------------
+function Lil.TransferBank(Target,Value)
+  local source = source
+  local Passport = vRP.Passport(source)   
+  local Permission = Permission[Passport]
+
+  if not Target or not Value or Value <= 0 then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Dados inválidos para transferência.","vermelho")
+    return false
+  end
+
+  local Balance = vRP.Permissions(Permission,"Bank")
+
+  if Balance < Value then
+    TriggerClientEvent("mdt:Notify",source,"Erro","Saldo insuficiente.","vermelho")
+    return false
+  end
+
+  vRP.PermissionsUpdate(Permission,"Bank","-",Value)
+
+  exports.oxmysql:insert_async("INSERT INTO painel_creative_transactions (Type, Passport, Value, Transfer, Timestamp, Permission) VALUES (\"Transfer\", ?, ?, ?, ?, ?)", { Passport, Value, Target, os.time(), Permission })
+
+  vRP.GiveBank(Target, Value, true)
+
+	TriggerClientEvent("mdt:Notify",source,"Sucesso","Transferência realizada.","verde")
+
+  return true
+end

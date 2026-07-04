@@ -1,0 +1,262 @@
+✅ 1) GARAGES — COLE ESSAS FUNÇÕES (core.lua)
+
+Abra: garages/client-side/core.lua
+Cole isso perto do topo do arquivo, depois dos local/variables (antes das funções principais):
+
+-- =========================================================
+-- FG PATCH: normaliza customize para evitar nil (colors/extracolors/lights/neon/mods)
+-- =========================================================
+local function FG_EnsureBoolNeon(neon)
+	if type(neon) == "table" then
+		-- garante 0..3
+		neon[0] = (neon[0] == true)
+		neon[1] = (neon[1] == true)
+		neon[2] = (neon[2] == true)
+		neon[3] = (neon[3] == true)
+		return neon
+	end
+
+	if type(neon) == "boolean" then
+		return { [0]=neon, [1]=neon, [2]=neon, [3]=neon }
+	end
+
+	return { [0]=false, [1]=false, [2]=false, [3]=false }
+end
+
+local function FG_ToNumber(n, d)
+	n = tonumber(n)
+	if n == nil then return d end
+	return n
+end
+
+local function FG_EnsureCustomize(customize)
+	if type(customize) ~= "table" then customize = {} end
+
+	-- aliases (compat)
+	if type(customize.colors) ~= "table" and type(customize.color) == "table" then
+		customize.colors = customize.color
+	end
+
+	if type(customize.extracolors) ~= "table" and type(customize.extracolor) == "table" then
+		customize.extracolors = customize.extracolor
+	end
+
+	if type(customize.lights) ~= "table" and type(customize.neoncolor) == "table" then
+		customize.lights = customize.neoncolor
+	end
+
+	if customize.xenonColor == nil and customize.xenon ~= nil then
+		customize.xenonColor = customize.xenon
+	end
+
+	if customize.tint == nil then
+		customize.tint = customize.window or customize.windowtint or 0
+	end
+
+	-- colors
+	if type(customize.colors) ~= "table" then
+		customize.colors = { 0, 0 }
+	end
+	customize.colors[1] = FG_ToNumber(customize.colors[1], 0)
+	customize.colors[2] = FG_ToNumber(customize.colors[2], 0)
+
+	-- extracolors
+	if type(customize.extracolors) ~= "table" then
+		customize.extracolors = { 0, 0 }
+	end
+	customize.extracolors[1] = FG_ToNumber(customize.extracolors[1], 0)
+	customize.extracolors[2] = FG_ToNumber(customize.extracolors[2], 0)
+
+	-- lights (RGB)
+	if type(customize.lights) ~= "table" then
+		customize.lights = { 255, 255, 255 }
+	end
+	customize.lights[1] = FG_ToNumber(customize.lights[1], 255)
+	customize.lights[2] = FG_ToNumber(customize.lights[2], 255)
+	customize.lights[3] = FG_ToNumber(customize.lights[3], 255)
+
+	-- smoke (RGB)
+	if type(customize.smoke) ~= "table" and type(customize.smokecolor) == "table" then
+		customize.smoke = customize.smokecolor
+	end
+	if type(customize.smoke) ~= "table" then
+		customize.smoke = { 255, 255, 255 }
+	end
+	customize.smoke[1] = FG_ToNumber(customize.smoke[1], 255)
+	customize.smoke[2] = FG_ToNumber(customize.smoke[2], 255)
+	customize.smoke[3] = FG_ToNumber(customize.smoke[3], 255)
+
+	-- neon
+	customize.neon = FG_EnsureBoolNeon(customize.neon)
+
+	-- wheeltype / xenon / plate / tint
+	customize.wheeltype  = FG_ToNumber(customize.wheeltype, 0)
+	customize.xenonColor = FG_ToNumber(customize.xenonColor, -1)
+	customize.plateIndex = FG_ToNumber(customize.plateIndex or customize.plate, 0)
+	customize.tint       = FG_ToNumber(customize.tint, 0)
+
+	-- tyres
+	customize.tyresCanBurst = (customize.tyresCanBurst == nil) and true or customize.tyresCanBurst
+
+	-- mods
+	if type(customize.mods) ~= "table" then
+		customize.mods = {}
+	end
+	for i = 0, 48 do
+		local k = tostring(i)
+		if customize.mods[i] == nil and customize.mods[k] ~= nil then
+			customize.mods[i] = customize.mods[k]
+		elseif customize.mods[i] == nil and customize.mods[k] == nil then
+			customize.mods[i] = -1
+			customize.mods[k] = -1
+		end
+		customize.mods[i] = FG_ToNumber(customize.mods[i], -1)
+		customize.mods[k] = FG_ToNumber(customize.mods[k], -1)
+	end
+
+	-- var (wheels variation)
+	if type(customize.var) ~= "table" then customize.var = {} end
+	for _,i in ipairs({23,24}) do
+		local k = tostring(i)
+		local v = customize.var[i]
+		if v == nil then v = customize.var[k] end
+		v = FG_ToNumber(v, 0)
+		customize.var[i] = v
+		customize.var[k] = v
+	end
+
+	return customize
+end
+
+✅ 2) GARAGES — AGORA VOCÊ DEVE TROCAR O BLOCO DENTRO DO VehicleMods()
+
+Procure no garages/client-side/core.lua a função:
+
+function VehicleMods(Vehicle,customize)
+
+
+Logo no começo dela, coloque:
+
+customize = FG_EnsureCustomize(customize)
+
+
+Exemplo:
+
+function VehicleMods(Vehicle,customize)
+	customize = FG_EnsureCustomize(customize)
+	-- resto do VehicleMods...
+
+✅ E SUBSTITUA O TRECHO QUE APLICA CORES/EXTRACOLORS/LIGHTS/NEON POR ESTE BLOCO
+
+Dentro do VehicleMods, procure onde ele faz algo tipo:
+
+customize.colors[1]
+
+customize.extracolors[1]
+
+customize.lights[1]
+
+customize.neon[0]
+
+E troque pelo bloco abaixo (pode colar exatamente assim):
+
+-- =========================================================
+-- FG APPLY COLORS / EXTRACOLORS / LIGHTS / NEON (SAFE)
+-- =========================================================
+SetVehicleModKit(Vehicle, 0)
+
+-- colors (primary/secondary)
+SetVehicleColours(Vehicle, customize.colors[1], customize.colors[2])
+
+-- extra colors (pearlescent / wheel)
+SetVehicleExtraColours(Vehicle, customize.extracolors[1], customize.extracolors[2])
+
+-- window tint
+SetVehicleWindowTint(Vehicle, customize.tint)
+
+-- plate index
+SetVehicleNumberPlateTextIndex(Vehicle, customize.plateIndex)
+
+-- xenon color (se tiver xenon ligado em mod 22, vai pegar; se não, não atrapalha)
+SetVehicleXenonLightsColour(Vehicle, customize.xenonColor)
+
+-- neon enable
+for i = 0, 3 do
+	SetVehicleNeonLightEnabled(Vehicle, i, customize.neon[i] == true)
+end
+
+-- neon color via "lights"
+SetVehicleNeonLightsColour(Vehicle, customize.lights[1], customize.lights[2], customize.lights[3])
+
+-- smoke color
+ToggleVehicleMod(Vehicle, 20, true)
+SetVehicleTyreSmokeColor(Vehicle, customize.smoke[1], customize.smoke[2], customize.smoke[3])
+
+-- wheel type
+SetVehicleWheelType(Vehicle, customize.wheeltype)
+
+-- tyres
+SetVehicleTyresCanBurst(Vehicle, customize.tyresCanBurst)
+
+
+✅ Isso resolve:
+
+colors nil
+
+extracolors nil
+
+lights nil
+
+e garante que a pintura sempre aplica quando puxa
+
+✅ 3) SQL — O QUE VOCÊ PRECISA ATUALIZAR?
+✅ Normalmente: NADA
+
+Se suas tabelas são:
+
+entitydata (dkey, dvalue)
+
+bennys_vehicle_mods (plate, mods, updated_at)
+
+Você não precisa mudar schema.
+
+⚠️ Quando precisa mexer no SQL?
+
+Somente se o campo dvalue da entitydata estiver curto (tipo VARCHAR(255) ou TEXT pequeno) e você perceber que o JSON está sendo cortado (isso causa):
+
+Unexpected end of JSON input
+
+carro não vem com mods
+
+NUI quebra
+
+✅ SOLUÇÃO SQL RECOMENDADA (segura)
+
+Rode isso no HeidiSQL:
+
+ALTER TABLE entitydata MODIFY dvalue LONGTEXT;
+
+
+E se sua bennys_vehicle_mods.mods também guarda JSON grande:
+
+ALTER TABLE bennys_vehicle_mods MODIFY mods LONGTEXT;
+
+
+✅ LONGTEXT aguenta JSON gigante sem truncar.
+
+✅ CHECKLIST FINAL (pra integrar em outra base)
+GARAGES
+
+ Colar FG_EnsureCustomize + helpers no core.lua
+
+ Dentro do VehicleMods, colocar customize = FG_EnsureCustomize(customize)
+
+ Trocar o trecho de aplicar cores/neon/lights/extracolors pelo bloco SAFE acima
+
+SQL
+
+ Só se der “Unexpected end of JSON input”:
+
+ entitydata.dvalue = LONGTEXT
+
+ bennys_vehicle_mods.mods = LONGTEXT (opcional mas recomendado)
